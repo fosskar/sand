@@ -58,7 +58,7 @@ pub fn get_tools() -> Vec<Tool> {
                 "type": "string",
                 "enum": ["project", "global"],
                 "default": "project",
-                "description": "Where to store: 'project' (current project) or 'global' (all projects)"
+                "description": "Where to store: 'project' (facts specific to the current repository) or 'global' (everything else: user preferences and general knowledge that applies across projects)"
             },
             "replace_id": {
                 "type": "string",
@@ -87,12 +87,12 @@ pub fn get_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "store".to_string(),
-            description: "Store content for later retrieval. Use for preferences, facts, reference material, docs, or any information worth remembering. Long content is automatically chunked for better search. Use replace_id to atomically replace an existing item.".to_string(),
+            description: "Store content in the user's long-term memory, shared by all agents and sessions. Call this without being asked when the user states a preference or decision, says to remember something, or you learn a durable non-obvious fact. Use scope 'global' for anything not specific to the current repository: facts about the user, their preferences, and general knowledge such as how a tool or language behaves. Use the default 'project' scope for facts about the current repository. Long content is automatically chunked for better search. Use replace_id to atomically replace an existing item.".to_string(),
             input_schema: store_schema,
         },
         Tool {
             name: "recall".to_string(),
-            description: "Search stored content by semantic similarity. Returns matching items with relevant excerpts for chunked content.".to_string(),
+            description: "Search the user's long-term memory by semantic similarity, across project and global items. Call this at the start of a conversation and before work where earlier context could matter: user preferences, prior decisions, project conventions. Returns matching items with relevant excerpts for chunked content.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1280,6 +1280,117 @@ mod tests {
             parsed["count"], 1,
             "Should have exactly 1 item after replace"
         );
+    }
+
+    fn store_id(result: &CallToolResult) -> String {
+        assert!(
+            result.is_error.is_none(),
+            "store failed: {:?}",
+            result.content
+        );
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        parsed["id"].as_str().unwrap().to_string()
+    }
+
+    async fn list_ids(ctx: &ServerContext, scope: &str) -> Vec<String> {
+        let result = execute_tool(ctx, "list", Some(json!({ "scope": scope }))).await;
+        assert!(
+            result.is_error.is_none(),
+            "list failed: {:?}",
+            result.content
+        );
+        let text = &result.content[0].text;
+        if text == "No items stored yet." {
+            return Vec::new();
+        }
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        parsed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_store_global_scope_is_global() {
+        let (mut ctx, _tmp) = setup_test_context().await;
+        // list rejects project ids that are not hex
+        ctx.project_id = Some("00000000000000000000000000000000000000aa".to_string());
+
+        let result = execute_tool(
+            &ctx,
+            "store",
+            Some(json!({ "content": "the user prefers tabs over spaces", "scope": "global" })),
+        )
+        .await;
+        let id = store_id(&result);
+
+        assert_eq!(list_ids(&ctx, "global").await, vec![id.clone()]);
+        assert!(list_ids(&ctx, "project").await.is_empty());
+        assert_eq!(list_ids(&ctx, "all").await, vec![id.clone()]);
+
+        // another project sees the item as global: no cross-project flag, may forget it
+        ctx.project_id = Some("00000000000000000000000000000000000000bb".to_string());
+        let recall = execute_tool(
+            &ctx,
+            "recall",
+            Some(json!({ "query": "the user prefers tabs over spaces" })),
+        )
+        .await;
+        assert!(
+            recall.is_error.is_none(),
+            "recall failed: {:?}",
+            recall.content
+        );
+        let parsed: Value = serde_json::from_str(&recall.content[0].text).unwrap();
+        let hit = parsed["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id.as_str())
+            .expect("recall should return the global item");
+        assert!(hit.get("cross_project").is_none(), "got: {}", hit);
+
+        let forget = execute_tool(&ctx, "forget", Some(json!({ "id": id }))).await;
+        assert!(
+            forget.is_error.is_none(),
+            "forget failed: {:?}",
+            forget.content
+        );
+        assert!(list_ids(&ctx, "all").await.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_store_replace_id_global_scope() {
+        let (mut ctx, _tmp) = setup_test_context().await;
+        ctx.project_id = Some("00000000000000000000000000000000000000aa".to_string());
+
+        let old_id = store_id(
+            &execute_tool(
+                &ctx,
+                "store",
+                Some(json!({ "content": "global note, first version", "scope": "global" })),
+            )
+            .await,
+        );
+        let new_id = store_id(
+            &execute_tool(
+                &ctx,
+                "store",
+                Some(json!({
+                    "content": "global note, second version",
+                    "scope": "global",
+                    "replace_id": old_id
+                })),
+            )
+            .await,
+        );
+
+        assert_eq!(list_ids(&ctx, "global").await, vec![new_id]);
+        assert!(list_ids(&ctx, "project").await.is_empty());
     }
 
     #[tokio::test]

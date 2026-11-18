@@ -107,6 +107,16 @@ enum Commands {
         #[arg(long)]
         no_prune: bool,
     },
+
+    /// Drain the consolidation queue (merge near-duplicates, link related)
+    Consolidate {
+        /// Stop after this many batches (each batch handles 5 candidates)
+        #[arg(long, default_value_t = 100)]
+        max_batches: usize,
+    },
+
+    /// Print the project ID derived from the current directory
+    Project,
 }
 
 fn main() -> Result<()> {
@@ -145,7 +155,76 @@ fn main() -> Result<()> {
         Some(Commands::Recall { query, limit }) => run_recall(cli.db, &query, limit, cli.json),
         Some(Commands::Forget { id }) => run_forget(cli.db, &id, cli.json),
         Some(Commands::Compact { force, no_prune }) => run_compact(cli.db, force, no_prune),
+        Some(Commands::Consolidate { max_batches }) => {
+            run_consolidate(cli.db, max_batches, cli.json)
+        }
+        Some(Commands::Project) => run_project(cli.db, cli.json),
     }
+}
+
+/// Drain the consolidation queue until empty or `max_batches` is reached.
+///
+/// Upstream only drains from MCP server mode: `spawn_consolidation` has a
+/// single caller in `mcp/tools.rs`, fired after each recall. CLI `store`
+/// enqueues candidates that nothing ever processes. A spawned task would
+/// not survive a CLI process exit, so batches are awaited in-line.
+fn run_consolidate(
+    db_override: Option<PathBuf>,
+    max_batches: usize,
+    output_json: bool,
+) -> Result<()> {
+    let ctx = cli_context(db_override);
+
+    if !ctx.db_path.exists() {
+        if output_json {
+            println!("{}", json!({"batches": 0, "remaining": 0}));
+        } else {
+            println!("Database does not exist yet. Nothing to consolidate.");
+        }
+        return Ok(());
+    }
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let embedder = std::sync::Arc::new(sediment::Embedder::new()?);
+        let mut batches = 0usize;
+
+        while batches < max_batches {
+            let queue = sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
+            let empty = queue.fetch_pending(1)?.is_empty();
+            drop(queue);
+            if empty {
+                break;
+            }
+
+            sediment::consolidation::run_consolidation_batch(
+                &ctx.db_path,
+                &ctx.access_db_path,
+                ctx.project_id.clone(),
+                embedder.clone(),
+            )
+            .await?;
+            batches += 1;
+        }
+
+        // fetch_pending casts its limit to i64; keep it well inside range
+        // rather than relying on usize::MAX wrapping to SQLite's LIMIT -1.
+        const REMAINING_CAP: usize = 1_000_000;
+        let queue = sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
+        let remaining = queue.fetch_pending(REMAINING_CAP)?.len();
+        queue.cleanup_processed().ok();
+
+        if output_json {
+            println!("{}", json!({ "batches": batches, "remaining": remaining }));
+        } else {
+            println!(
+                "Processed {} batch(es); {} candidate(s) remaining.",
+                batches, remaining
+            );
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 /// Run the MCP server (default behavior)
@@ -400,19 +479,37 @@ fn cli_context(db_override: Option<PathBuf>) -> CliContext {
     let sediment_dir = db_path.parent().unwrap_or(&db_path);
     let access_db_path = sediment_dir.join("access.db");
 
-    let cwd = std::env::current_dir().ok();
-    let project_root = cwd
-        .as_deref()
-        .map(|dir| sediment::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
-    let project_id = project_root
-        .as_ref()
-        .and_then(|root| sediment::get_or_create_project_id(root).ok());
+    // a caller that resolved the project earlier can act on it after the
+    // project directory is gone; an empty value forces global context
+    let project_id = match std::env::var("SEDIMENT_PROJECT_ID") {
+        Ok(id) => Some(id).filter(|id| !id.is_empty()),
+        Err(_) => {
+            let cwd = std::env::current_dir().ok();
+            let project_root = cwd
+                .as_deref()
+                .map(|dir| sediment::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
+            project_root
+                .as_ref()
+                .and_then(|root| sediment::get_or_create_project_id(root).ok())
+        }
+    };
 
     CliContext {
         db_path,
         access_db_path,
         project_id,
     }
+}
+
+/// Print the project ID that project-scoped commands would use.
+fn run_project(db_override: Option<PathBuf>, output_json: bool) -> Result<()> {
+    let ctx = cli_context(db_override);
+    if output_json {
+        println!("{}", json!({ "project_id": ctx.project_id }));
+    } else if let Some(id) = ctx.project_id {
+        println!("{id}");
+    }
+    Ok(())
 }
 
 /// List stored items

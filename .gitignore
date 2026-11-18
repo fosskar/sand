@@ -16,3 +16,6 @@ Thumbs.db
 
 # Sediment local data
 .sediment/
+
+# Nix
+/result
