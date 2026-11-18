@@ -43,7 +43,7 @@ cargo bench
 
 ## Architecture
 
-See [CLAUDE.md](./CLAUDE.md) for a detailed architecture overview including:
+See [AGENTS.md](./AGENTS.md) for a detailed architecture overview including:
 - Two-database hybrid design (LanceDB + SQLite)
 - MCP server structure
 - Data flow and key design decisions
