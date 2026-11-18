@@ -2,6 +2,16 @@
 
 Guidance for coding agents working in this repository.
 
+## Principles
+
+**Simple outside, smart inside.** Every change is measured against it.
+
+- The model sees four MCP tools: `store`, `recall`, `list`, `forget`. A new capability works invisibly or lives in the CLI. It does not add a tool, or a parameter the model has to fill in.
+- Notes have no fields for the user or the model to manage: no tags, titles, metadata or expiry dates.
+- Local mode needs no configuration and is the default. A server is optional and off unless configured.
+- Anything temporary names the version in which it is removed.
+- sand delivers the memory and generic interfaces (MCP, CLI, `sand hook recall`). Wiring for one specific agent harness, such as config writers, extensions or home-manager modules, does not belong in this repository.
+
 This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and `.sediment/config` project ids keep working (README.md, "Differences from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
 
 Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice except `init`): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), the `~/.sediment/data` default in `default_db_path`, and `mcp__sediment__` in `has_sand_instructions`. The database format and the `.sediment/config` import stay.
