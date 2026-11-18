@@ -145,7 +145,7 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         None => run_mcp_server(cli.db),
-        Some(Commands::Init { local, global }) => run_init(local, global),
+        Some(Commands::Init { local, global }) => run_init(cli.db, local, global),
         Some(Commands::Stats) => run_stats(cli.db),
         Some(Commands::List { limit, scope }) => run_list(cli.db, limit, &scope, cli.json),
         Some(Commands::Store {
@@ -232,41 +232,35 @@ fn run_consolidate(
 fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
     // Get database path
     let db_path = db_override.unwrap_or_else(crate::central_db_path);
+    let access_db_path = db_path.parent().unwrap_or(&db_path).join("access.db");
 
     // Auto-detect project context from current directory
-    // If no .git or .sand marker found, use cwd as project root
-    let cwd = std::env::current_dir().ok();
-    let project_root = cwd
-        .as_deref()
-        .map(|dir| crate::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
-    let project_id = project_root
-        .as_ref()
-        .and_then(|root| crate::get_or_create_project_id(root).ok());
+    let project = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok());
 
     // Check for pending project ID migration (UUID → git hash)
-    if let Some(ref root) = project_root
-        && let Some(old_id) = crate::pending_migration(root)
-        && let Some(ref new_id) = project_id
+    if let Some(ref project) = project
+        && let Some(ref old_id) = project.migrate_from
     {
+        let new_id = &project.id;
         tracing::info!("Migrating project ID: {} → {}", old_id, new_id);
 
         // Migrate LanceDB items
         let rt = tokio::runtime::Runtime::new()?;
-        if let Err(e) = rt.block_on(crate::db::migrate_project_id(&db_path, &old_id, new_id)) {
+        if let Err(e) = rt.block_on(crate::db::migrate_project_id(&db_path, old_id, new_id)) {
             tracing::warn!("Failed to migrate LanceDB items: {}", e);
         }
 
         // Migrate graph nodes
-        let sand_dir = db_path.parent().unwrap_or(&db_path);
-        let access_db_path = sand_dir.join("access.db");
         if let Ok(graph) = crate::graph::GraphStore::open(&access_db_path)
-            && let Err(e) = graph.migrate_project_id(&old_id, new_id)
+            && let Err(e) = graph.migrate_project_id(old_id, new_id)
         {
             tracing::warn!("Failed to migrate graph nodes: {}", e);
         }
 
         // Clear migration marker
-        if let Err(e) = crate::clear_migration_marker(root) {
+        if let Err(e) = crate::finish_project_migration(&access_db_path, old_id, new_id) {
             tracing::warn!("Failed to clear migration marker: {}", e);
         }
     }
@@ -274,16 +268,13 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
     tracing::info!("Starting sand MCP server");
     tracing::info!("Database: {:?}", db_path);
 
-    if let Some(ref root) = project_root {
-        tracing::info!("Project: {:?}", root);
-    }
-
-    if let Some(ref pid) = project_id {
-        tracing::info!("Project ID: {}", pid);
+    if let Some(ref project) = project {
+        tracing::info!("Project: {:?}", project.root);
+        tracing::info!("Project ID: {}", project.id);
     }
 
     // Run MCP server
-    crate::mcp::run(&db_path, project_id)?;
+    crate::mcp::run(&db_path, project.map(|p| p.id))?;
 
     Ok(())
 }
@@ -299,22 +290,19 @@ fn has_sand_instructions(path: &PathBuf) -> bool {
 }
 
 /// Initialize Claude Code integration
-fn run_init(use_local: bool, use_global: bool) -> Result<()> {
+fn run_init(db_override: Option<PathBuf>, use_local: bool, use_global: bool) -> Result<()> {
     use dialoguer::{Confirm, Select};
 
-    let cwd = std::env::current_dir()?;
+    // Find the project; outside git this stores its id
+    let db_path = db_override.unwrap_or_else(crate::central_db_path);
+    let access_db_path = db_path.parent().unwrap_or(&db_path).join("access.db");
+    let project = crate::resolve_project(&std::env::current_dir()?, &access_db_path)?;
 
-    // Find or create project root
-    let project_root = crate::find_project_root(&cwd).unwrap_or_else(|| cwd.clone());
-
-    println!("Initializing sand for: {}", project_root.display());
-
-    // Create .sand directory and project ID
-    let sand_dir = crate::init_project(&project_root)?;
-    println!("Created: {}", sand_dir.display());
+    println!("Initializing sand for: {}", project.root.display());
+    println!("Project ID: {}", project.id);
 
     // Determine CLAUDE.md paths
-    let local_claude_md = project_root.join("CLAUDE.md");
+    let local_claude_md = project.root.join("CLAUDE.md");
     let global_claude_md = dirs::home_dir()
         .map(|h| h.join(".claude").join("CLAUDE.md"))
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
@@ -484,15 +472,10 @@ fn cli_context(db_override: Option<PathBuf>) -> CliContext {
     // project directory is gone; an empty value forces global context
     let project_id = match crate::setting("PROJECT_ID") {
         Some(id) => Some(id).filter(|id| !id.is_empty()),
-        None => {
-            let cwd = std::env::current_dir().ok();
-            let project_root = cwd
-                .as_deref()
-                .map(|dir| crate::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
-            project_root
-                .as_ref()
-                .and_then(|root| crate::get_or_create_project_id(root).ok())
-        }
+        None => std::env::current_dir()
+            .ok()
+            .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok())
+            .map(|project| project.id),
     };
 
     CliContext {
