@@ -237,16 +237,27 @@ fn project_config_paths(project_root: &Path) -> std::io::Result<(PathBuf, PathBu
 /// Get or create the project ID for a given project root.
 ///
 /// Git project configs are cached in central sand state. Existing repository-local
-/// configs are imported on first use. Non-Git projects retain a local UUID config.
+/// configs and configs written by Sediment (`.sediment/config`) are copied on first use;
+/// the old files stay. Non-Git projects retain a local UUID config.
 pub fn get_or_create_project_id(project_root: &Path) -> std::io::Result<String> {
     let (sand_dir, config_path) = project_config_paths(project_root)?;
-    let local_config_path = project_root.join(".sand").join("config");
 
-    if !config_path.exists() && config_path != local_config_path && local_config_path.exists() {
-        let content = std::fs::read_to_string(&local_config_path)?;
-        if let Ok(config) = serde_json::from_str::<ProjectConfig>(&content) {
-            std::fs::create_dir_all(&sand_dir)?;
-            write_config_atomic(&sand_dir, &config_path, &config)?;
+    if !config_path.exists() {
+        let candidates = [
+            sand_dir.with_file_name(".sediment").join("config"),
+            project_root.join(".sand").join("config"),
+            project_root.join(".sediment").join("config"),
+        ];
+        for path in candidates
+            .iter()
+            .filter(|p| **p != config_path && p.exists())
+        {
+            let content = std::fs::read_to_string(path)?;
+            if let Ok(config) = serde_json::from_str::<ProjectConfig>(&content) {
+                std::fs::create_dir_all(&sand_dir)?;
+                write_config_atomic(&sand_dir, &config_path, &config)?;
+                break;
+            }
         }
     }
 
@@ -365,7 +376,7 @@ pub fn boost_similarity(
 
 /// Find the project root by walking up from the given path.
 ///
-/// Looks for directories containing `.sand/` or `.git/` markers.
+/// Looks for directories containing `.sand/`, Sediment's `.sediment/` or `.git/` markers.
 /// Returns `None` if no project root is found.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
@@ -382,8 +393,8 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
         }
         depth += 1;
 
-        // Check for .sand directory first (explicit project marker)
-        if current.join(".sand").is_dir() {
+        // Check for .sand or .sediment directory first (explicit project marker)
+        if current.join(".sand").is_dir() || current.join(".sediment").is_dir() {
             return Some(current);
         }
 
