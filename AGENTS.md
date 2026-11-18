@@ -49,7 +49,11 @@ nix build .#                         # Build the package (runs the tests that wo
 
 ## CI
 
-nixbot builds the flake `checks`: `package` (build plus the tests that run without network), `formatting` (treefmt) and `clippy` (`cargo clippy --all-targets -- -D warnings`). `nix/effects.nix` schedules a flake input update every day at 02:30. There are no GitHub workflows.
+nixbot builds the flake `checks`: `package` (build plus the tests that run without network), `formatting` (treefmt) and `clippy` (`cargo clippy --all-targets -- -D warnings`). `nix/effects.nix` schedules a flake input update every day at 02:30. Pull requests are checked only by nixbot; the one GitHub workflow, `.github/workflows/release.yml`, builds releases.
+
+## Releases
+
+To release, bump `version` in `Cargo.toml` and `Cargo.lock` on `main`. After the checks pass on that push, the `release-tag` effect in `nix/effects.nix` creates the tag `v<version>` at the pushed commit through the GitHub API, unless the tag exists. The tag push starts `.github/workflows/release.yml` on `ubuntu-22.04`: it fails if the tag does not match `Cargo.toml`, runs `cargo build --release --locked`, and creates the GitHub release with generated notes, `sand-x86_64-linux.tar.gz` (`sand` and `LICENSE`) and `SHA256SUMS`. The asset names carry no version, so `releases/latest/download/<name>` and `install.sh` always get the newest release. If the workflow failed before it created the release, start it again with `gh workflow run release.yml -f tag=v<version>`.
 
 ## Architecture
 
