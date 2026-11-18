@@ -59,7 +59,6 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 ### Added
 
-- `consolidate` command: drains the consolidation queue, which merges near-duplicates and links related notes. Sediment drained it only inside the MCP server, so notes stored through the CLI were never merged.
 - `hook recall` command for `UserPromptSubmit` hooks; see [Harness integration](#harness-integration).
 - Guidance in the MCP tool descriptions and server instructions on when to recall, when to store, and which scope to use.
 - Nix flake with a package and a dev shell. CI runs the flake checks (build and tests, formatting, clippy) on nixbot.
@@ -67,6 +66,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 ### Fixed
 
 - A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
+- Near-duplicates were merged, and similar notes linked, only after a recall in the MCP server, so notes stored through the CLI were rarely or never merged. Every store now starts consolidation: the MCP server runs it in the background, `sand store` runs one batch before it exits.
 - Replacing a note with the MCP `store` tool did not count as a validation of the new note, while `store --replace` on the command line did. Both count it now; validations raise the trust bonus of a note in recall.
 - The build failed clippy on the current Rust toolchain.
 
@@ -75,6 +75,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 - The Homebrew formula, the macOS binaries and the crates.io package. A GitHub Actions workflow builds the Linux x86_64 release binary again, and `install.sh` installs it; other systems install with `cargo install` or the Nix flake.
 - The `init` command, which wrote usage instructions into `CLAUDE.md`. The MCP tool descriptions and the server instructions carry that guidance. Sediment and sand 0.6.0 had the command.
 - The `project` command, which printed the project ID of the current directory, and the `SAND_PROJECT_ID` setting, which replaced that ID for CLI commands. sand 0.6.0 had both.
+- The `consolidate` command, which drained the consolidation queue by hand. Consolidation runs after every store now. sand 0.6.0 had the command.
 
 ### Compatibility
 

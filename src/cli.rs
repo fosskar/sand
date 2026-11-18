@@ -100,13 +100,6 @@ enum Commands {
         no_prune: bool,
     },
 
-    /// Drain the consolidation queue (merge near-duplicates, link related)
-    Consolidate {
-        /// Stop after this many batches (each batch handles 5 candidates)
-        #[arg(long, default_value_t = 100)]
-        max_batches: usize,
-    },
-
     /// Commands that agent harnesses run as hooks
     #[command(subcommand)]
     Hook(Hook),
@@ -171,53 +164,12 @@ pub fn run() -> Result<()> {
         Some(Commands::Recall { query, limit }) => run_recall(cli.db, &query, limit, cli.json),
         Some(Commands::Forget { id }) => run_forget(cli.db, &id, cli.json),
         Some(Commands::Compact { force, no_prune }) => run_compact(cli.db, force, no_prune),
-        Some(Commands::Consolidate { max_batches }) => {
-            run_consolidate(cli.db, max_batches, cli.json)
-        }
         Some(Commands::Hook(Hook::Recall {
             min_similarity,
             limit,
             max_tries,
         })) => run_hook_recall(cli.db, min_similarity, limit, max_tries),
     }
-}
-
-/// Drain the consolidation queue until empty or `max_batches` is reached.
-///
-/// Upstream only drains from MCP server mode, after each recall. CLI `store`
-/// enqueues candidates that nothing ever processes.
-fn run_consolidate(
-    db_override: Option<PathBuf>,
-    max_batches: usize,
-    output_json: bool,
-) -> Result<()> {
-    let ctx = cli_context(db_override);
-
-    if !ctx.db_path.exists() {
-        if output_json {
-            println!("{}", json!({"batches": 0, "remaining": 0}));
-        } else {
-            println!("Database does not exist yet. Nothing to consolidate.");
-        }
-        return Ok(());
-    }
-
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let consolidated = ctx.backend().consolidate(max_batches).await?;
-        let (batches, remaining) = (consolidated.batches, consolidated.remaining);
-
-        if output_json {
-            println!("{}", json!({ "batches": batches, "remaining": remaining }));
-        } else {
-            println!(
-                "Processed {} batch(es); {} candidate(s) remaining.",
-                batches, remaining
-            );
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })
 }
 
 /// Run the MCP server (default behavior)

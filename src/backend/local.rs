@@ -8,12 +8,10 @@ use std::sync::{Arc, OnceLock};
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
-use super::{
-    Backend, BackendError, Compacted, Consolidated, Recalled, StoreRequest, Stored, failed,
-};
+use super::{Backend, BackendError, Compacted, Recalled, StoreRequest, Stored, failed};
 use crate::access::AccessTracker;
 use crate::compaction::spawn_compaction;
-use crate::consolidation::{ConsolidationQueue, spawn_consolidation};
+use crate::consolidation::{ConsolidationQueue, run_consolidation_batch, spawn_consolidation};
 use crate::db::{CompactConfig, DatabaseStats, is_valid_id, score_with_decay};
 use crate::graph::GraphStore;
 use crate::item::{Item, ItemFilters};
@@ -106,8 +104,8 @@ impl LocalBackend {
         }
     }
 
-    /// Background work after a recall with results.
-    fn spawn_after_recall(&self, work: &BackgroundWork, result_ids: Vec<String>) {
+    /// Process a batch of the consolidation queue in the background, unless one runs already.
+    fn start_consolidation(&self, work: &BackgroundWork) {
         spawn_consolidation(
             Arc::new(self.db_path.clone()),
             Arc::new(self.access_db_path.clone()),
@@ -115,6 +113,11 @@ impl LocalBackend {
             work.embedder.clone(),
             work.consolidation_semaphore.clone(),
         );
+    }
+
+    /// Background work after a recall with results.
+    fn spawn_after_recall(&self, work: &BackgroundWork, result_ids: Vec<String>) {
+        self.start_consolidation(work);
 
         let access_db_path = self.access_db_path.clone();
         spawn_logged("co_access", async move {
@@ -258,6 +261,25 @@ impl Backend for LocalBackend {
         // Periodic compaction: every 50 write operations
         self.maybe_spawn_compaction();
 
+        // merge or link the near-duplicates the store queued
+        match &self.background {
+            Some(work) => self.start_consolidation(work),
+            // a spawned task would not survive the CLI process; one batch keeps the command quick
+            None if !store_result.potential_conflicts.is_empty() => {
+                if let Err(e) = run_consolidation_batch(
+                    &self.db_path,
+                    &self.access_db_path,
+                    self.project_id.clone(),
+                    self.embedder()?,
+                )
+                .await
+                {
+                    tracing::warn!("consolidation after store failed: {}", e);
+                }
+            }
+            None => {}
+        }
+
         Ok(Stored {
             id: new_id,
             potential_conflicts: store_result.potential_conflicts,
@@ -383,44 +405,6 @@ impl Backend for LocalBackend {
             size_before,
             size_after: crate::db::dir_size(&self.db_path),
         })
-    }
-
-    /// Batches are awaited in-line: a spawned task would not survive a CLI process exit.
-    async fn consolidate(&self, max_batches: usize) -> Result<Consolidated, BackendError> {
-        let context = "Failed to consolidate";
-        let embedder = self.embedder()?;
-        let mut batches = 0usize;
-
-        while batches < max_batches {
-            let queue = ConsolidationQueue::open(&self.access_db_path).map_err(failed(context))?;
-            let empty = queue.fetch_pending(1).map_err(failed(context))?.is_empty();
-            drop(queue);
-            if empty {
-                break;
-            }
-
-            crate::consolidation::run_consolidation_batch(
-                &self.db_path,
-                &self.access_db_path,
-                self.project_id.clone(),
-                embedder.clone(),
-            )
-            .await
-            .map_err(failed(context))?;
-            batches += 1;
-        }
-
-        // fetch_pending casts its limit to i64; keep it well inside range
-        // rather than relying on usize::MAX wrapping to SQLite's LIMIT -1.
-        const REMAINING_CAP: usize = 1_000_000;
-        let queue = ConsolidationQueue::open(&self.access_db_path).map_err(failed(context))?;
-        let remaining = queue
-            .fetch_pending(REMAINING_CAP)
-            .map_err(failed(context))?
-            .len();
-        queue.cleanup_processed().ok();
-
-        Ok(Consolidated { batches, remaining })
     }
 
     async fn migrate_project(&self, old_id: &str, new_id: &str) {

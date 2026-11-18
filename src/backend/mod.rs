@@ -18,6 +18,7 @@ pub trait Backend {
     /// Project the operations act for; `None` is the global context.
     fn project_id(&self) -> Option<&str>;
 
+    /// Store content, then merge or link the near-duplicates it queued for consolidation.
     async fn store(&self, request: StoreRequest) -> Result<Stored, BackendError>;
 
     /// Search by semantic similarity, with decay scoring, trust weighting and graph expansion.
@@ -32,9 +33,6 @@ pub trait Backend {
 
     /// Compact the storage; `force` also deletes unverified files, `no_prune` keeps old versions.
     async fn compact(&self, force: bool, no_prune: bool) -> Result<Compacted, BackendError>;
-
-    /// Drain the consolidation queue until it is empty or `max_batches` batches ran.
-    async fn consolidate(&self, max_batches: usize) -> Result<Consolidated, BackendError>;
 
     /// Move the items and graph nodes of project `old_id` to `new_id`; failures are logged.
     async fn migrate_project(&self, old_id: &str, new_id: &str);
@@ -73,13 +71,6 @@ pub struct Compacted {
     pub stats: CompactStats,
     pub size_before: u64,
     pub size_after: u64,
-}
-
-#[derive(Debug)]
-pub struct Consolidated {
-    pub batches: usize,
-    /// Candidates still pending.
-    pub remaining: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
