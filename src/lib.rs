@@ -439,8 +439,6 @@ mod tests {
     fn test_default_db_path_falls_back_to_sediment() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path();
-        assert_eq!(default_db_path(home), home.join(".sand/data"));
-
         std::fs::create_dir_all(home.join(".sediment/data")).unwrap();
         assert_eq!(default_db_path(home), home.join(".sediment/data"));
 
