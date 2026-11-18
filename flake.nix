@@ -7,6 +7,11 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nixbot = {
+      url = "github:Mic92/nixbot";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.treefmt-nix.follows = "treefmt-nix";
+    };
   };
 
   outputs =
@@ -14,6 +19,7 @@
       self,
       nixpkgs,
       treefmt-nix,
+      nixbot,
     }:
     let
       inherit (nixpkgs) lib;
@@ -89,6 +95,11 @@
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
         };
       });
+
+      herculesCI = import ./effects.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        inherit nixbot;
+      };
 
       formatter = forAllSystems (
         pkgs: treefmtFor.${pkgs.stdenv.hostPlatform.system}.config.build.wrapper
