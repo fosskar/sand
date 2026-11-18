@@ -30,6 +30,7 @@ cargo run --release -- forget <id>              # Delete an item
 cargo run --release -- compact                  # Compact LanceDB storage
 cargo run --release -- consolidate              # Drain the consolidation queue (merge duplicates, link related)
 cargo run --release -- project                  # Print the project ID of the current directory
+echo '{"prompt":"...","session_id":"s1"}' | cargo run --release -- hook recall  # UserPromptSubmit hook
 cargo run --release -- --json list              # JSON output (any command)
 
 # Run tests (requires model download on first run)
@@ -67,7 +68,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 ### Core Components
 
 - **`src/main.rs`**, **`src/bin/sediment.rs`** - the `sand` and `sediment` executables; both call `sand::cli::run`
-- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project) and MCP server startup
+- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and shares `recall` with the `recall` subcommand
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
 - **`src/embedder.rs`** - Local embeddings via Candle. The `EmbeddingModel` enum lists the supported models; the default is `all-MiniLM-L6-v2` (384-dim vectors)
@@ -205,8 +206,8 @@ CREATE TABLE projects (
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 32 tests are ignored in total and none of them run in the Nix build
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 33 tests are ignored in total and none of them run in the Nix build
 - Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
-- `tests/cli_global_scope.rs` and `tests/cli_compat.rs` are integration tests that run the built binaries
+- `tests/cli_global_scope.rs`, `tests/cli_compat.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data
 - LanceDB operations are async; tests use `#[tokio::test]` or `tokio::runtime::Runtime`

@@ -62,6 +62,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 - `consolidate` command: drains the consolidation queue, which merges near-duplicates and links related notes. Sediment drained it only inside the MCP server, so notes stored through the CLI were never merged.
 - `project` command: prints the project ID of the current directory.
 - `SAND_PROJECT_ID` setting: sets the project ID for CLI commands; an empty value means global context.
+- `hook recall` command for `UserPromptSubmit` hooks; see [Harness integration](#harness-integration).
 - Guidance in the MCP tool descriptions and server instructions on when to recall, when to store, and which scope to use.
 - Nix flake with a package and a dev shell. CI runs the flake checks (build and tests, formatting, clippy) on nixbot.
 
@@ -191,6 +192,24 @@ Add to `~/.zed/settings.json` on macOS or `~/.config/zed/settings.json` on Linux
 }
 ```
 
+## Harness integration
+
+`sand hook recall` adds the memories that match the first prompt of a session to the model context, so recall does not depend on the model calling the `recall` tool. It reads the `UserPromptSubmit` hook JSON of Claude Code and Codex on stdin and uses `prompt`, `cwd` (for the project) and `session_id`. On stdout it prints a `<recalled_memories>` block with at most 3 notes whose similarity before decay scoring is at least 0.5, or nothing. It recalls on the first prompt of a session and on the next ones while nothing matched, 5 prompts at most; the count per session is kept in `$XDG_RUNTIME_DIR/sand-recall` (or `/tmp/sand-recall`). `--limit`, `--min-similarity` and `--max-tries` change these values. A hook recall counts as an access for decay scoring, the same as `sand recall`.
+
+For Claude Code, add the hook to `~/.claude/settings.json`; for Codex, the same `hooks` object goes into `~/.codex/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "sand hook recall", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+Harnesses without command hooks can run the same command from their own extension mechanism: pass the JSON above on stdin and add the output to the context.
+
 ## Tools
 
 | Tool | Parameters | Description |
@@ -212,6 +231,7 @@ sand store "some content"         # Store content
 sand store -                      # Store content from stdin
 sand recall "search query"        # Search by semantic similarity
 sand forget <id>                  # Delete an item by ID
+sand hook recall                  # Print memories for a UserPromptSubmit hook
 ```
 
 All commands support `--json` for machine-readable output.
