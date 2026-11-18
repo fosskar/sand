@@ -1,6 +1,3 @@
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/fosskar/sand/actions/workflows/ci.yml/badge.svg)](https://github.com/fosskar/sand/actions/workflows/ci.yml)
-
 # sand
 
 Semantic memory for AI agents. Local-first, MCP-native.
