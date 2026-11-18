@@ -2,48 +2,15 @@
 //!
 //! 4 tools: store, recall, list, forget
 
-use std::sync::Arc;
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::access::AccessTracker;
-use crate::compaction::spawn_compaction;
-use crate::consolidation::{ConsolidationQueue, spawn_consolidation};
-use crate::db::{is_valid_id, score_with_decay};
-use crate::graph::GraphStore;
-use crate::item::{Item, ItemFilters};
+use crate::backend::{Backend, BackendError, StoreRequest, truncate};
 use crate::retry::{RetryConfig, with_retry};
-use crate::{Database, ListScope, StoreScope};
+use crate::{ListScope, StoreScope};
 
 use super::protocol::{CallToolResult, Tool};
 use super::server::ServerContext;
-
-/// Spawn a background task with panic logging. If the task panics, the panic
-/// is caught and logged as an error instead of silently disappearing.
-fn spawn_logged(name: &'static str, fut: impl std::future::Future<Output = ()> + Send + 'static) {
-    tokio::spawn(async move {
-        let result = tokio::task::spawn(fut).await;
-        if let Err(e) = result {
-            tracing::error!("Background task '{}' panicked: {:?}", name, e);
-        }
-    });
-}
-
-/// Increment the write counter and spawn background compaction every 50 writes.
-fn maybe_spawn_compaction(ctx: &ServerContext) {
-    let count = ctx
-        .write_count
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    if count % 50 == 49 {
-        spawn_compaction(
-            Arc::new(ctx.db_path.clone()),
-            ctx.project_id.clone(),
-            ctx.embedder.clone(),
-            ctx.compaction_semaphore.clone(),
-        );
-    }
-}
 
 /// Get all available tools (4 total)
 pub fn get_tools() -> Vec<Tool> {
@@ -181,74 +148,27 @@ pub struct ForgetParams {
     pub id: String,
 }
 
-// ========== Recall Configuration ==========
-
-/// Controls which graph and scoring features are enabled during recall.
-/// Used by benchmarks to measure the impact of individual features.
-pub struct RecallConfig {
-    pub enable_graph_backfill: bool,
-    pub enable_graph_expansion: bool,
-    pub enable_co_access: bool,
-    pub enable_decay_scoring: bool,
-    pub enable_background_tasks: bool,
-}
-
-impl Default for RecallConfig {
-    fn default() -> Self {
-        Self {
-            enable_graph_backfill: true,
-            enable_graph_expansion: true,
-            enable_co_access: true,
-            enable_decay_scoring: true,
-            enable_background_tasks: true,
-        }
-    }
-}
-
-/// Result of a recall pipeline execution (for benchmark consumption).
-pub struct RecallResult {
-    pub results: Vec<crate::item::SearchResult>,
-    pub graph_expanded: Vec<Value>,
-    pub suggested: Vec<Value>,
-    /// Raw (pre-decay/trust) similarity scores, keyed by item ID
-    pub raw_similarities: std::collections::HashMap<String, f32>,
-}
-
 // ========== Tool Execution ==========
 
-pub async fn execute_tool(ctx: &ServerContext, name: &str, args: Option<Value>) -> CallToolResult {
+pub async fn execute_tool<B: Backend>(
+    ctx: &ServerContext<B>,
+    name: &str,
+    args: Option<Value>,
+) -> CallToolResult {
     let config = RetryConfig::default();
     let args_for_retry = args.clone();
 
     let result = with_retry(&config, || {
-        let ctx_ref = ctx;
+        let backend = &ctx.backend;
         let name_ref = name;
         let args_clone = args_for_retry.clone();
 
         async move {
-            // Open fresh connection with shared embedder
-            let mut db = Database::open_with_embedder(
-                &ctx_ref.db_path,
-                ctx_ref.project_id.clone(),
-                ctx_ref.embedder.clone(),
-            )
-            .await
-            .map_err(|e| sanitize_err("Failed to open database", e))?;
-
-            // Open graph store (shares access.db) — needed by store, recall, forget
-            let graph = GraphStore::open(&ctx_ref.access_db_path)
-                .map_err(|e| sanitize_err("Failed to open graph store", e))?;
-
             let result = match name_ref {
-                "store" => execute_store(&mut db, &graph, ctx_ref, args_clone).await,
-                "recall" => {
-                    // Access tracker only needed for recall (decay scoring)
-                    let tracker = AccessTracker::open(&ctx_ref.access_db_path)
-                        .map_err(|e| sanitize_err("Failed to open access tracker", e))?;
-                    execute_recall(&mut db, &tracker, &graph, ctx_ref, args_clone).await
-                }
-                "list" => execute_list(&mut db, args_clone).await,
-                "forget" => execute_forget(&mut db, &graph, ctx_ref, args_clone).await,
+                "store" => execute_store(backend, args_clone).await,
+                "recall" => execute_recall(backend, args_clone).await,
+                "list" => execute_list(backend, args_clone).await,
+                "forget" => execute_forget(backend, args_clone).await,
                 _ => return Ok(CallToolResult::error(format!("Unknown tool: {}", name_ref))),
             };
 
@@ -293,12 +213,7 @@ fn is_retryable_error(error_msg: &str) -> bool {
 
 // ========== Tool Implementations ==========
 
-async fn execute_store(
-    db: &mut Database,
-    graph: &GraphStore,
-    ctx: &ServerContext,
-    args: Option<Value>,
-) -> CallToolResult {
+async fn execute_store(backend: &impl Backend, args: Option<Value>) -> CallToolResult {
     let params: StoreParams = match args {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
@@ -338,101 +253,38 @@ async fn execute_store(
         Err(e) => return CallToolResult::error(e),
     };
 
-    // Build item
-    let mut item = Item::new(&params.content);
-
-    // Override created_at if provided (benchmark builds only)
     #[cfg(feature = "bench")]
-    if let Some(ts) = params.created_at {
-        if let Some(dt) = chrono::DateTime::from_timestamp(ts, 0) {
-            item = item.with_created_at(dt);
-        }
-    }
+    let created_at = params.created_at;
+    #[cfg(not(feature = "bench"))]
+    let created_at = None;
 
-    // Set project_id based on scope
-    if scope == StoreScope::Project
-        && let Some(project_id) = db.project_id()
-    {
-        item = item.with_project_id(project_id);
-    }
+    let request = StoreRequest {
+        content: params.content,
+        scope,
+        replace_id: params.replace_id,
+        record_validation: false,
+        created_at,
+    };
 
-    match db.store_item(item).await {
-        Ok(store_result) => {
-            let new_id = store_result.id.clone();
-
-            // Create graph node
-            let now = chrono::Utc::now().timestamp();
-            let project_id = db.project_id().map(|s| s.to_string());
-            if let Err(e) = graph.add_node(&new_id, project_id.as_deref(), now) {
-                tracing::warn!("graph add_node failed: {}", e);
-            }
-
-            // Enqueue consolidation candidates from conflicts
-            if !store_result.potential_conflicts.is_empty()
-                && let Ok(queue) = ConsolidationQueue::open(&ctx.access_db_path)
-            {
-                for conflict in &store_result.potential_conflicts {
-                    if let Err(e) = queue.enqueue(&new_id, &conflict.id, conflict.similarity as f64)
-                    {
-                        tracing::warn!("enqueue consolidation failed: {}", e);
-                    }
-                }
-            }
-
-            // Handle replace_id: delete old item, preserve graph lineage
-            let mut replaced = false;
-            if let Some(ref old_id) = params.replace_id {
-                if !is_valid_id(old_id) {
-                    tracing::warn!("replace_id is not a valid ID: {}", old_id);
-                } else {
-                    if let Err(e) = graph.add_supersedes_edge(&new_id, old_id) {
-                        tracing::warn!("replace: add_supersedes_edge failed: {}", e);
-                    }
-                    if let Err(e) = graph.transfer_edges(old_id, &new_id) {
-                        tracing::warn!("replace: transfer_edges failed: {}", e);
-                    }
-                    match db.delete_item(old_id).await {
-                        Ok(true) => {
-                            replaced = true;
-                        }
-                        Ok(false) => {
-                            tracing::warn!("replace: old item not found: {}", old_id);
-                        }
-                        Err(e) => {
-                            tracing::warn!("replace: delete_item failed: {}", e);
-                        }
-                    }
-                    if let Err(e) = graph.remove_node(old_id) {
-                        tracing::warn!("replace: remove_node failed: {}", e);
-                    }
-                }
-            }
-
-            // Periodic compaction: every 50 write operations
-            maybe_spawn_compaction(ctx);
-
-            let message = if replaced {
-                format!(
-                    "Stored in {} scope (replaced {})",
-                    scope,
-                    params.replace_id.as_deref().unwrap_or("")
-                )
-            } else {
-                format!("Stored in {} scope", scope)
+    match backend.store(request).await {
+        Ok(stored) => {
+            let message = match stored.replaced_id {
+                Some(ref old_id) => format!("Stored in {} scope (replaced {})", scope, old_id),
+                None => format!("Stored in {} scope", scope),
             };
 
             let mut result = json!({
                 "success": true,
-                "id": new_id,
+                "id": stored.id,
                 "message": message
             });
 
-            if replaced {
-                result["replaced_id"] = json!(params.replace_id);
+            if stored.replaced_id.is_some() {
+                result["replaced_id"] = json!(stored.replaced_id);
             }
 
-            if !store_result.potential_conflicts.is_empty() {
-                let conflicts: Vec<Value> = store_result
+            if !stored.potential_conflicts.is_empty() {
+                let conflicts: Vec<Value> = stored
                     .potential_conflicts
                     .iter()
                     .map(|c| {
@@ -451,204 +303,11 @@ async fn execute_store(
                     .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {}\"}}", e)),
             )
         }
-        Err(e) => sanitized_error("Failed to store item", e),
+        Err(e) => backend_error(e),
     }
 }
 
-/// Core recall pipeline, extracted for benchmarking.
-///
-/// Performs: vector search, optional decay scoring, optional graph backfill,
-/// optional 1-hop graph expansion, and optional co-access suggestions.
-pub async fn recall_pipeline(
-    db: &mut Database,
-    tracker: &AccessTracker,
-    graph: &GraphStore,
-    query: &str,
-    limit: usize,
-    filters: ItemFilters,
-    config: &RecallConfig,
-) -> std::result::Result<RecallResult, String> {
-    let mut results = db
-        .search_items(query, limit, filters)
-        .await
-        .map_err(|e| format!("Search failed: {}", e))?;
-
-    if results.is_empty() {
-        return Ok(RecallResult {
-            results: Vec::new(),
-            graph_expanded: Vec::new(),
-            suggested: Vec::new(),
-            raw_similarities: std::collections::HashMap::new(),
-        });
-    }
-
-    // Lazy graph backfill (uses project_id from SearchResult, no extra queries)
-    if config.enable_graph_backfill {
-        for result in &results {
-            if let Err(e) = graph.add_node(
-                &result.id,
-                result.project_id.as_deref(),
-                result.created_at.timestamp(),
-            ) {
-                tracing::warn!("graph backfill failed: {}", e);
-            }
-        }
-    }
-
-    // Decay scoring — preserve raw similarity for transparency
-    let mut raw_similarities: std::collections::HashMap<String, f32> =
-        std::collections::HashMap::new();
-    if config.enable_decay_scoring {
-        let item_ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-        let decay_data = tracker.get_decay_data(&item_ids).unwrap_or_default();
-        let edge_counts = graph.get_edge_counts(&item_ids).unwrap_or_default();
-        let now = chrono::Utc::now().timestamp();
-
-        for result in &mut results {
-            raw_similarities.insert(result.id.clone(), result.similarity);
-
-            let created_at = result.created_at.timestamp();
-            let (access_count, last_accessed, validation_count) = match decay_data.get(&result.id) {
-                Some(data) => (
-                    data.access_count,
-                    Some(data.last_accessed_at),
-                    data.validation_count,
-                ),
-                None => (0, None, 0),
-            };
-
-            let base_score = score_with_decay(
-                result.similarity,
-                now,
-                created_at,
-                access_count,
-                last_accessed,
-            );
-
-            let edge_count = edge_counts.get(&result.id).copied().unwrap_or(0);
-            let trust_bonus = 1.0
-                + 0.05 * (1.0 + validation_count as f64).ln() as f32
-                + 0.005 * edge_count as f32;
-
-            result.similarity = (base_score * trust_bonus).min(1.0);
-        }
-
-        results.sort_by(|a, b| {
-            b.similarity
-                .partial_cmp(&a.similarity)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
-
-    // Record access
-    for result in &results {
-        let created_at = result.created_at.timestamp();
-        if let Err(e) = tracker.record_access(&result.id, created_at) {
-            tracing::warn!("record_access failed: {}", e);
-        }
-    }
-
-    // Graph expansion
-    let existing_ids: std::collections::HashSet<String> =
-        results.iter().map(|r| r.id.clone()).collect();
-
-    let mut graph_expanded = Vec::new();
-    if config.enable_graph_expansion {
-        let top_ids: Vec<&str> = results.iter().take(5).map(|r| r.id.as_str()).collect();
-        if let Ok(neighbors) = graph.get_neighbors(&top_ids, 0.5) {
-            // Collect neighbor IDs not already in results, then batch fetch
-            let neighbor_info: Vec<(String, String)> = neighbors
-                .into_iter()
-                .filter(|(id, _, _)| !existing_ids.contains(id))
-                .map(|(id, rel_type, _)| (id, rel_type))
-                .collect();
-
-            let neighbor_ids: Vec<&str> = neighbor_info.iter().map(|(id, _)| id.as_str()).collect();
-            if let Ok(items) = db.get_items_batch(&neighbor_ids).await {
-                let item_map: std::collections::HashMap<&str, &Item> =
-                    items.iter().map(|item| (item.id.as_str(), item)).collect();
-
-                for (neighbor_id, rel_type) in &neighbor_info {
-                    if let Some(item) = item_map.get(neighbor_id.as_str()) {
-                        let sr = crate::item::SearchResult::from_item(item, 0.05);
-                        let mut entry = json!({
-                            "id": sr.id,
-                            "similarity": "graph",
-                            "created": sr.created_at.to_rfc3339(),
-                            "graph_expanded": true,
-                            "rel_type": rel_type,
-                        });
-                        // Only include content for same-project or global items
-                        let same_project = match (db.project_id(), item.project_id.as_deref()) {
-                            (Some(current), Some(item_pid)) => current == item_pid,
-                            (_, None) => true,
-                            _ => false,
-                        };
-                        if same_project {
-                            entry["content"] = json!(sr.content);
-                        } else {
-                            entry["cross_project"] = json!(true);
-                        }
-                        graph_expanded.push(entry);
-                    }
-                }
-            }
-        }
-    }
-
-    // Co-access suggestions (batch fetch)
-    let mut suggested = Vec::new();
-    if config.enable_co_access {
-        let top3_ids: Vec<&str> = results.iter().take(3).map(|r| r.id.as_str()).collect();
-        if let Ok(co_accessed) = graph.get_co_accessed(&top3_ids, 3) {
-            let co_info: Vec<(String, i64)> = co_accessed
-                .into_iter()
-                .filter(|(id, _)| !existing_ids.contains(id))
-                .collect();
-
-            let co_ids: Vec<&str> = co_info.iter().map(|(id, _)| id.as_str()).collect();
-            if let Ok(items) = db.get_items_batch(&co_ids).await {
-                let item_map: std::collections::HashMap<&str, &Item> =
-                    items.iter().map(|item| (item.id.as_str(), item)).collect();
-
-                for (co_id, co_count) in &co_info {
-                    if let Some(item) = item_map.get(co_id.as_str()) {
-                        let same_project = match (db.project_id(), item.project_id.as_deref()) {
-                            (Some(current), Some(item_pid)) => current == item_pid,
-                            (_, None) => true,
-                            _ => false,
-                        };
-                        let mut entry = json!({
-                            "id": item.id,
-                            "reason": format!("frequently recalled with result (co-accessed {} times)", co_count),
-                        });
-                        if same_project {
-                            entry["content"] = json!(truncate(&item.content, 100));
-                        } else {
-                            entry["cross_project"] = json!(true);
-                        }
-                        suggested.push(entry);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(RecallResult {
-        results,
-        graph_expanded,
-        suggested,
-        raw_similarities,
-    })
-}
-
-async fn execute_recall(
-    db: &mut Database,
-    tracker: &AccessTracker,
-    graph: &GraphStore,
-    ctx: &ServerContext,
-    args: Option<Value>,
-) -> CallToolResult {
+async fn execute_recall(backend: &impl Backend, args: Option<Value>) -> CallToolResult {
     let params: RecallParams = match args {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
@@ -678,30 +337,18 @@ async fn execute_recall(
 
     let limit = params.limit.unwrap_or(5).min(100);
 
-    let filters = ItemFilters::new();
-
-    let config = RecallConfig::default();
-
-    let recall_result =
-        match recall_pipeline(db, tracker, graph, &params.query, limit, filters, &config).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Recall failed: {}", e);
-                return CallToolResult::error("Search failed");
-            }
-        };
+    let recalled = match backend.recall(&params.query, limit).await {
+        Ok(r) => r,
+        Err(e) => return backend_error(e),
+    };
+    let recall_result = &recalled.result;
+    let neighbors_map = &recalled.related_ids;
 
     if recall_result.results.is_empty() {
         return CallToolResult::success("No items found matching your query.");
     }
 
     let results = &recall_result.results;
-
-    // Batch-fetch neighbors for all result IDs
-    let all_result_ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-    let neighbors_map = graph
-        .get_neighbors_mapped(&all_result_ids, 0.5)
-        .unwrap_or_default();
 
     let formatted: Vec<Value> = results
         .iter()
@@ -725,7 +372,7 @@ async fn execute_recall(
             }
 
             // Cross-project flag
-            if let Some(ref current_pid) = ctx.project_id
+            if let Some(current_pid) = backend.project_id()
                 && let Some(ref item_pid) = r.project_id
                 && item_pid != current_pid
             {
@@ -756,75 +403,13 @@ async fn execute_recall(
         result_json["suggested"] = json!(recall_result.suggested);
     }
 
-    // Fire-and-forget: background consolidation (Phase 2b)
-    spawn_consolidation(
-        Arc::new(ctx.db_path.clone()),
-        Arc::new(ctx.access_db_path.clone()),
-        ctx.project_id.clone(),
-        ctx.embedder.clone(),
-        ctx.consolidation_semaphore.clone(),
-    );
-
-    // Fire-and-forget: co-access recording (Phase 3a)
-    let result_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
-    let access_db_path = ctx.access_db_path.clone();
-    spawn_logged("co_access", async move {
-        if let Ok(g) = GraphStore::open(&access_db_path) {
-            if let Err(e) = g.record_co_access(&result_ids) {
-                tracing::warn!("record_co_access failed: {}", e);
-            }
-        } else {
-            tracing::warn!("co_access: failed to open graph store");
-        }
-    });
-
-    // Periodic maintenance: every 10th recall
-    let run_count = ctx
-        .recall_count
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    if run_count % 10 == 9 {
-        // Clustering
-        let access_db_path = ctx.access_db_path.clone();
-        spawn_logged("clustering", async move {
-            if let Ok(g) = GraphStore::open(&access_db_path)
-                && let Ok(clusters) = g.detect_clusters()
-            {
-                for (a, b, c) in &clusters {
-                    let label = format!("cluster-{}", &a[..8.min(a.len())]);
-                    if let Err(e) = g.add_related_edge(a, b, 0.8, &label) {
-                        tracing::warn!("cluster add_related_edge failed: {}", e);
-                    }
-                    if let Err(e) = g.add_related_edge(b, c, 0.8, &label) {
-                        tracing::warn!("cluster add_related_edge failed: {}", e);
-                    }
-                    if let Err(e) = g.add_related_edge(a, c, 0.8, &label) {
-                        tracing::warn!("cluster add_related_edge failed: {}", e);
-                    }
-                }
-                if !clusters.is_empty() {
-                    tracing::info!("Detected {} clusters", clusters.len());
-                }
-            }
-        });
-
-        // Consolidation queue cleanup: purge old processed entries
-        let access_db_path2 = ctx.access_db_path.clone();
-        spawn_logged("consolidation_cleanup", async move {
-            if let Ok(q) = crate::consolidation::ConsolidationQueue::open(&access_db_path2)
-                && let Err(e) = q.cleanup_processed()
-            {
-                tracing::warn!("consolidation queue cleanup failed: {}", e);
-            }
-        });
-    }
-
     CallToolResult::success(
         serde_json::to_string_pretty(&result_json)
             .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {}\"}}", e)),
     )
 }
 
-async fn execute_list(db: &mut Database, args: Option<Value>) -> CallToolResult {
+async fn execute_list(backend: &impl Backend, args: Option<Value>) -> CallToolResult {
     let params: ListParams =
         args.and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or(ListParams {
@@ -845,7 +430,7 @@ async fn execute_list(db: &mut Database, args: Option<Value>) -> CallToolResult 
         Err(e) => return CallToolResult::error(e),
     };
 
-    match db.list_items(Some(limit), scope).await {
+    match backend.list(limit, scope).await {
         Ok(items) => {
             if items.is_empty() {
                 CallToolResult::success("No items stored yet.")
@@ -880,16 +465,11 @@ async fn execute_list(db: &mut Database, args: Option<Value>) -> CallToolResult 
                 )
             }
         }
-        Err(e) => sanitized_error("Failed to list items", e),
+        Err(e) => backend_error(e),
     }
 }
 
-async fn execute_forget(
-    db: &mut Database,
-    graph: &GraphStore,
-    ctx: &ServerContext,
-    args: Option<Value>,
-) -> CallToolResult {
+async fn execute_forget(backend: &impl Backend, args: Option<Value>) -> CallToolResult {
     let params: ForgetParams = match args {
         Some(v) => match serde_json::from_value(v) {
             Ok(p) => p,
@@ -901,36 +481,8 @@ async fn execute_forget(
         None => return CallToolResult::error("Missing parameters"),
     };
 
-    // Access control: verify the item belongs to the current project (or is global)
-    if let Some(ref current_pid) = ctx.project_id {
-        match db.get_item(&params.id).await {
-            Ok(Some(item)) => {
-                if let Some(ref item_pid) = item.project_id
-                    && item_pid != current_pid
-                {
-                    return CallToolResult::error(format!(
-                        "Cannot delete item {} from a different project",
-                        params.id
-                    ));
-                }
-            }
-            Ok(None) => return CallToolResult::error(format!("Item not found: {}", params.id)),
-            Err(e) => {
-                return sanitized_error("Failed to look up item", e);
-            }
-        }
-    }
-
-    match db.delete_item(&params.id).await {
-        Ok(true) => {
-            // Remove from graph
-            if let Err(e) = graph.remove_node(&params.id) {
-                tracing::warn!("remove_node failed: {}", e);
-            }
-
-            // Periodic compaction: every 50 write operations
-            maybe_spawn_compaction(ctx);
-
+    match backend.forget(&params.id).await {
+        Ok(()) => {
             let result = json!({
                 "success": true,
                 "message": format!("Deleted item: {}", params.id)
@@ -940,39 +492,21 @@ async fn execute_forget(
                     .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {}\"}}", e)),
             )
         }
-        Ok(false) => CallToolResult::error(format!("Item not found: {}", params.id)),
-        Err(e) => sanitized_error("Failed to delete item", e),
+        Err(e) => backend_error(e),
     }
 }
 
 // ========== Utilities ==========
 
-/// Log a detailed internal error and return a sanitized message to the MCP client.
-/// This prevents leaking file paths, database internals, or OS details.
-fn sanitized_error(context: &str, err: impl std::fmt::Display) -> CallToolResult {
-    tracing::error!("{}: {}", context, err);
-    CallToolResult::error(context.to_string())
-}
-
-/// Like `sanitized_error` but returns a String for use inside `map_err` chains.
-fn sanitize_err(context: &str, err: impl std::fmt::Display) -> String {
-    tracing::error!("{}: {}", context, err);
-    context.to_string()
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else if max_len <= 3 {
-        // Not enough room for "..." suffix; just take max_len chars
-        s.chars().take(max_len).collect()
-    } else {
-        let cut = s
-            .char_indices()
-            .nth(max_len - 3)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..cut])
+/// Turn a backend error into a tool error. Failures are logged in detail and reported
+/// to the MCP client by their context only, so no file paths or database internals leak.
+fn backend_error(err: BackendError) -> CallToolResult {
+    match err {
+        BackendError::Failed { context, error } => {
+            tracing::error!("{}: {}", context, error);
+            CallToolResult::error(context)
+        }
+        err => CallToolResult::error(err.to_string()),
     }
 }
 
@@ -980,56 +514,30 @@ fn truncate(s: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_truncate_small_max_len() {
-        // Bug #25: truncate should not panic when max_len < 3
-        assert_eq!(truncate("hello", 0), "");
-        assert_eq!(truncate("hello", 1), "h");
-        assert_eq!(truncate("hello", 2), "he");
-        assert_eq!(truncate("hello", 3), "hel");
-        assert_eq!(truncate("hi", 3), "hi"); // shorter than max, no truncation
-        assert_eq!(truncate("hello", 5), "hello");
-        assert_eq!(truncate("hello!", 5), "he...");
-    }
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn test_truncate_unicode() {
-        assert_eq!(truncate("héllo wörld", 5), "hé...");
-        assert_eq!(truncate("日本語テスト", 4), "日...");
-    }
-
-    // ========== Integration Tests ==========
-
-    use std::path::PathBuf;
-    use std::sync::Mutex;
-    use tokio::sync::Semaphore;
+    use crate::backend::LocalBackend;
 
     /// Create a ServerContext with temp dirs for integration testing.
-    async fn setup_test_context() -> (ServerContext, tempfile::TempDir) {
+    async fn setup_test_context() -> (ServerContext<LocalBackend>, tempfile::TempDir) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("data");
-        let access_db_path = tmp.path().join("access.db");
+        let ctx = test_context(tmp.path(), "test-project-00000001");
+        (ctx, tmp)
+    }
 
+    /// A ServerContext on the store in `dir`, acting for `project_id`.
+    fn test_context(dir: &Path, project_id: &str) -> ServerContext<LocalBackend> {
         let embedder = Arc::new(crate::Embedder::new().unwrap());
-        let project_id = Some("test-project-00000001".to_string());
-
-        let ctx = ServerContext {
-            db_path,
-            access_db_path,
-            project_id,
-            embedder,
+        ServerContext {
+            backend: LocalBackend::new(dir.join("data"), Some(project_id.to_string()))
+                .with_background_work(embedder),
             cwd: PathBuf::from("."),
-            consolidation_semaphore: Arc::new(Semaphore::new(1)),
-            compaction_semaphore: Arc::new(Semaphore::new(1)),
-            recall_count: std::sync::atomic::AtomicU64::new(0),
-            write_count: std::sync::atomic::AtomicU64::new(0),
             rate_limit: Mutex::new(super::super::server::RateLimitState {
                 window_start_ms: 0,
                 count: 0,
             }),
-        };
-
-        (ctx, tmp)
+        }
     }
 
     #[tokio::test]
@@ -1292,7 +800,7 @@ mod tests {
         parsed["id"].as_str().unwrap().to_string()
     }
 
-    async fn list_ids(ctx: &ServerContext, scope: &str) -> Vec<String> {
+    async fn list_ids(ctx: &ServerContext<LocalBackend>, scope: &str) -> Vec<String> {
         let result = execute_tool(ctx, "list", Some(json!({ "scope": scope }))).await;
         assert!(
             result.is_error.is_none(),
@@ -1315,9 +823,9 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires model download
     async fn test_store_global_scope_is_global() {
-        let (mut ctx, _tmp) = setup_test_context().await;
+        let tmp = tempfile::TempDir::new().unwrap();
         // list rejects project ids that are not hex
-        ctx.project_id = Some("00000000000000000000000000000000000000aa".to_string());
+        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");
 
         let result = execute_tool(
             &ctx,
@@ -1332,7 +840,7 @@ mod tests {
         assert_eq!(list_ids(&ctx, "all").await, vec![id.clone()]);
 
         // another project sees the item as global: no cross-project flag, may forget it
-        ctx.project_id = Some("00000000000000000000000000000000000000bb".to_string());
+        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000bb");
         let recall = execute_tool(
             &ctx,
             "recall",
@@ -1365,8 +873,8 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires model download
     async fn test_store_replace_id_global_scope() {
-        let (mut ctx, _tmp) = setup_test_context().await;
-        ctx.project_id = Some("00000000000000000000000000000000000000aa".to_string());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");
 
         let old_id = store_id(
             &execute_tool(

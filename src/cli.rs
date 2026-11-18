@@ -4,11 +4,14 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use tracing_subscriber::{EnvFilter, fmt};
+
+use crate::backend::{Backend, LocalBackend, StoreRequest};
 
 #[derive(Parser)]
 #[command(name = "sand", bin_name = "sand")]
@@ -197,10 +200,8 @@ pub fn run() -> Result<()> {
 
 /// Drain the consolidation queue until empty or `max_batches` is reached.
 ///
-/// Upstream only drains from MCP server mode: `spawn_consolidation` has a
-/// single caller in `mcp/tools.rs`, fired after each recall. CLI `store`
-/// enqueues candidates that nothing ever processes. A spawned task would
-/// not survive a CLI process exit, so batches are awaited in-line.
+/// Upstream only drains from MCP server mode, after each recall. CLI `store`
+/// enqueues candidates that nothing ever processes.
 fn run_consolidate(
     db_override: Option<PathBuf>,
     max_batches: usize,
@@ -219,33 +220,8 @@ fn run_consolidate(
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let embedder = std::sync::Arc::new(crate::Embedder::new()?);
-        let mut batches = 0usize;
-
-        while batches < max_batches {
-            let queue = crate::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
-            let empty = queue.fetch_pending(1)?.is_empty();
-            drop(queue);
-            if empty {
-                break;
-            }
-
-            crate::consolidation::run_consolidation_batch(
-                &ctx.db_path,
-                &ctx.access_db_path,
-                ctx.project_id.clone(),
-                embedder.clone(),
-            )
-            .await?;
-            batches += 1;
-        }
-
-        // fetch_pending casts its limit to i64; keep it well inside range
-        // rather than relying on usize::MAX wrapping to SQLite's LIMIT -1.
-        const REMAINING_CAP: usize = 1_000_000;
-        let queue = crate::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
-        let remaining = queue.fetch_pending(REMAINING_CAP)?.len();
-        queue.cleanup_processed().ok();
+        let consolidated = ctx.backend().consolidate(max_batches).await?;
+        let (batches, remaining) = (consolidated.batches, consolidated.remaining);
 
         if output_json {
             println!("{}", json!({ "batches": batches, "remaining": remaining }));
@@ -271,6 +247,8 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
         .ok()
         .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok());
 
+    let backend = LocalBackend::new(db_path.clone(), project.as_ref().map(|p| p.id.clone()));
+
     // Check for pending project ID migration (UUID → git hash)
     if let Some(ref project) = project
         && let Some(ref old_id) = project.migrate_from
@@ -278,18 +256,9 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
         let new_id = &project.id;
         tracing::info!("Migrating project ID: {} → {}", old_id, new_id);
 
-        // Migrate LanceDB items
+        // Migrate LanceDB items and graph nodes
         let rt = tokio::runtime::Runtime::new()?;
-        if let Err(e) = rt.block_on(crate::db::migrate_project_id(&db_path, old_id, new_id)) {
-            tracing::warn!("Failed to migrate LanceDB items: {}", e);
-        }
-
-        // Migrate graph nodes
-        if let Ok(graph) = crate::graph::GraphStore::open(&access_db_path)
-            && let Err(e) = graph.migrate_project_id(old_id, new_id)
-        {
-            tracing::warn!("Failed to migrate graph nodes: {}", e);
-        }
+        rt.block_on(backend.migrate_project(old_id, new_id));
 
         // Clear migration marker
         if let Err(e) = crate::finish_project_migration(&access_db_path, old_id, new_id) {
@@ -305,8 +274,13 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
         tracing::info!("Project ID: {}", project.id);
     }
 
+    // Load embedder once (expensive operation)
+    tracing::info!("Loading embedder model...");
+    let embedder = Arc::new(crate::Embedder::new().context("Failed to load embedder")?);
+    tracing::info!("Embedder loaded successfully");
+
     // Run MCP server
-    crate::mcp::run(&db_path, project.map(|p| p.id))?;
+    crate::mcp::run(backend.with_background_work(embedder))?;
 
     Ok(())
 }
@@ -476,8 +450,7 @@ fn run_stats(db_override: Option<PathBuf>) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let db = crate::Database::open(&db_path).await?;
-        let stats = db.stats().await?;
+        let stats = LocalBackend::new(db_path, None).stats().await?;
 
         println!("\nStatistics:");
         println!("  Items:  {}", stats.item_count);
@@ -490,8 +463,13 @@ fn run_stats(db_override: Option<PathBuf>) -> Result<()> {
 /// Shared context for CLI commands that need database access.
 struct CliContext {
     db_path: PathBuf,
-    access_db_path: PathBuf,
     project_id: Option<String>,
+}
+
+impl CliContext {
+    fn backend(&self) -> LocalBackend {
+        LocalBackend::new(self.db_path.clone(), self.project_id.clone())
+    }
 }
 
 /// Build CLI context: resolve DB path, detect project, derive project ID.
@@ -512,7 +490,6 @@ fn cli_context(db_override: Option<PathBuf>) -> CliContext {
 
     CliContext {
         db_path,
-        access_db_path,
         project_id,
     }
 }
@@ -552,8 +529,7 @@ fn run_list(
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let mut db = crate::Database::open_with_project(&ctx.db_path, ctx.project_id).await?;
-        let items = db.list_items(Some(limit), scope).await?;
+        let items = ctx.backend().list(limit, scope).await?;
 
         if output_json {
             let formatted: Vec<serde_json::Value> = items
@@ -649,89 +625,30 @@ fn run_store(
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let mut db =
-            crate::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
-
-        let mut item = crate::Item::new(&content);
-
-        // Set project_id based on scope
-        if scope == crate::StoreScope::Project
-            && let Some(ref project_id) = ctx.project_id
-        {
-            item = item.with_project_id(project_id);
-        }
-
-        let store_result = db.store_item(item).await?;
-        let new_id = store_result.id.clone();
-
-        // Create graph node
-        let graph = crate::graph::GraphStore::open(&ctx.access_db_path)?;
-        let now = chrono::Utc::now().timestamp();
-        if let Err(e) = graph.add_node(&new_id, ctx.project_id.as_deref(), now) {
-            tracing::warn!("graph add_node failed: {}", e);
-        }
-
-        // Enqueue consolidation candidates from conflicts
-        if !store_result.potential_conflicts.is_empty()
-            && let Ok(queue) =
-                crate::consolidation::ConsolidationQueue::open(&ctx.access_db_path)
-        {
-            for conflict in &store_result.potential_conflicts {
-                if let Err(e) =
-                    queue.enqueue(&new_id, &conflict.id, conflict.similarity as f64)
-                {
-                    tracing::warn!("enqueue consolidation failed: {}", e);
-                }
-            }
-        }
-
-        // Handle replace: delete old item, preserve graph lineage
-        let mut replaced = false;
-        if let Some(ref old_id) = replace {
-            if !crate::db::is_valid_id(old_id) {
-                tracing::warn!("replace ID is not valid: {}", old_id);
-            } else {
-                if let Err(e) = graph.add_supersedes_edge(&new_id, old_id) {
-                    tracing::warn!("replace: add_supersedes_edge failed: {}", e);
-                }
-                if let Err(e) = graph.transfer_edges(old_id, &new_id) {
-                    tracing::warn!("replace: transfer_edges failed: {}", e);
-                }
-
-                // Record validation on the new item
-                if let Ok(tracker) =
-                    crate::access::AccessTracker::open(&ctx.access_db_path)
-                {
-                    let created_at = chrono::Utc::now().timestamp();
-                    if let Err(e) = tracker.record_validation(&new_id, created_at) {
-                        tracing::warn!("replace: record_validation failed: {}", e);
-                    }
-                }
-
-                match db.delete_item(old_id).await {
-                    Ok(true) => replaced = true,
-                    Ok(false) => tracing::warn!("replace: old item not found: {}", old_id),
-                    Err(e) => tracing::warn!("replace: delete_item failed: {}", e),
-                }
-                if let Err(e) = graph.remove_node(old_id) {
-                    tracing::warn!("replace: remove_node failed: {}", e);
-                }
-            }
-        }
+        let stored = ctx
+            .backend()
+            .store(StoreRequest {
+                content,
+                scope,
+                replace_id: replace,
+                record_validation: true,
+                created_at: None,
+            })
+            .await?;
 
         if output_json {
             let mut result = json!({
                 "success": true,
-                "id": new_id,
+                "id": stored.id,
                 "scope": scope.to_string(),
             });
 
-            if replaced {
-                result["replaced_id"] = json!(replace);
+            if let Some(ref old_id) = stored.replaced_id {
+                result["replaced_id"] = json!(old_id);
             }
 
-            if !store_result.potential_conflicts.is_empty() {
-                let conflicts: Vec<serde_json::Value> = store_result
+            if !stored.potential_conflicts.is_empty() {
+                let conflicts: Vec<serde_json::Value> = stored
                     .potential_conflicts
                     .iter()
                     .map(|c| json!({"id": c.id, "content": c.content, "similarity": format!("{:.2}", c.similarity)}))
@@ -741,18 +658,18 @@ fn run_store(
 
             println!("{}", serde_json::to_string_pretty(&result)?);
         } else {
-            let header = if replaced {
-                format!("Stored (replaced {}):", replace.as_deref().unwrap_or(""))
+            let header = if let Some(ref old_id) = stored.replaced_id {
+                format!("Stored (replaced {}):", old_id)
             } else {
                 "Stored:".to_string()
             };
             println!("{}", header);
-            println!("  ID:    {}", new_id);
+            println!("  ID:    {}", stored.id);
             println!("  Scope: {}", scope);
 
-            if !store_result.potential_conflicts.is_empty() {
+            if !stored.potential_conflicts.is_empty() {
                 println!("\n  Potential conflicts:");
-                for c in &store_result.potential_conflicts {
+                for c in &stored.potential_conflicts {
                     let preview: String = c.content.chars().take(60).collect::<String>().replace('\n', " ");
                     println!("    {} (similarity: {:.2})", c.id, c.similarity);
                     println!("      {}", preview);
@@ -784,20 +701,11 @@ fn run_recall(
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let recall_result = recall(&ctx, query, limit).await?;
-        let graph = crate::graph::GraphStore::open(&ctx.access_db_path)?;
+        let recalled = ctx.backend().recall(query, limit).await?;
+        let recall_result = &recalled.result;
 
         if output_json {
-            // Batch-fetch neighbors for related_ids
-            let all_result_ids: Vec<&str> = recall_result
-                .results
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect();
-            let neighbors_map = graph
-                .get_neighbors_mapped(&all_result_ids, 0.5)
-                .unwrap_or_default();
-
+            let neighbors_map = &recalled.related_ids;
             let formatted: Vec<serde_json::Value> = recall_result
                 .results
                 .iter()
@@ -923,28 +831,6 @@ fn run_recall(
     })
 }
 
-/// The search behind `sand recall` and `sand hook recall`; it records an access for each result.
-async fn recall(
-    ctx: &CliContext,
-    query: &str,
-    limit: usize,
-) -> Result<crate::mcp::tools::RecallResult> {
-    let mut db = crate::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
-
-    let tracker = crate::access::AccessTracker::open(&ctx.access_db_path)?;
-    let graph = crate::graph::GraphStore::open(&ctx.access_db_path)?;
-
-    let filters = crate::ItemFilters::new();
-    let config = crate::mcp::tools::RecallConfig {
-        enable_background_tasks: false,
-        ..Default::default()
-    };
-
-    crate::mcp::tools::recall_pipeline(&mut db, &tracker, &graph, query, limit, filters, &config)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))
-}
-
 /// The fields `sand hook recall` reads from the hook JSON; the rest is ignored.
 #[derive(serde::Deserialize)]
 struct HookInput {
@@ -1012,7 +898,10 @@ fn run_hook_recall(
     let mut found = Vec::new();
     if ctx.db_path.exists() {
         // results are ranked after decay scoring; fetch more so the floor leaves enough
-        let result = tokio::runtime::Runtime::new()?.block_on(recall(&ctx, &prompt, 2 * limit))?;
+        let backend = ctx.backend();
+        let result = tokio::runtime::Runtime::new()?
+            .block_on(backend.recall(&prompt, 2 * limit))?
+            .result;
         for r in result.results {
             let similarity = result
                 .raw_similarities
@@ -1058,45 +947,18 @@ fn run_forget(db_override: Option<PathBuf>, id: &str, output_json: bool) -> Resu
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let db = crate::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
+        ctx.backend().forget(id).await?;
 
-        // Access control: verify the item belongs to the current project or is global
-        if let Some(ref current_pid) = ctx.project_id {
-            match db.get_item(id).await {
-                Ok(Some(item)) => {
-                    if let Some(ref item_pid) = item.project_id
-                        && item_pid != current_pid
-                    {
-                        anyhow::bail!("Cannot delete item {} from a different project", id);
-                    }
-                }
-                Ok(None) => anyhow::bail!("Item not found: {}", id),
-                Err(e) => anyhow::bail!("Failed to look up item: {}", e),
-            }
-        }
-
-        match db.delete_item(id).await {
-            Ok(true) => {
-                // Remove from graph
-                let graph = crate::graph::GraphStore::open(&ctx.access_db_path)?;
-                if let Err(e) = graph.remove_node(id) {
-                    tracing::warn!("remove_node failed: {}", e);
-                }
-
-                if output_json {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&json!({
-                            "success": true,
-                            "message": format!("Deleted item: {}", id),
-                        }))?
-                    );
-                } else {
-                    println!("Deleted item: {}", id);
-                }
-            }
-            Ok(false) => anyhow::bail!("Item not found: {}", id),
-            Err(e) => anyhow::bail!("Failed to delete item: {}", e),
+        if output_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "success": true,
+                    "message": format!("Deleted item: {}", id),
+                }))?
+            );
+        } else {
+            println!("Deleted item: {}", id);
         }
 
         Ok(())
@@ -1114,26 +976,14 @@ fn run_compact(db_override: Option<PathBuf>, force: bool, no_prune: bool) -> Res
 
     println!("Database: {}", db_path.display());
 
-    let size_before = crate::db::dir_size(&db_path);
-    println!("Size before: {}", format_bytes(size_before));
-
-    let config = crate::db::CompactConfig {
-        prune_older_than: if no_prune {
-            None
-        } else {
-            Some(chrono::Duration::zero())
-        },
-        delete_unverified: force,
-        num_threads: None, // use all CPUs for CLI
-        skip_prune: no_prune,
-    };
-
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let db = crate::Database::open(&db_path).await?;
-        let stats = db.optimize_tables(&config).await?;
-
-        let size_after = crate::db::dir_size(&db_path);
+        let compacted = LocalBackend::new(db_path, None)
+            .compact(force, no_prune)
+            .await?;
+        let (stats, size_before, size_after) =
+            (compacted.stats, compacted.size_before, compacted.size_after);
+        println!("Size before: {}", format_bytes(size_before));
 
         println!("\nOptimization results:");
         println!(
