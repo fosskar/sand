@@ -47,7 +47,7 @@ nix build .#                         # Build the package (runs the tests that wo
 
 ## CI
 
-nixbot builds the flake `checks`: `package` (build plus the tests that run without network), `formatting` (treefmt) and `clippy` (`cargo clippy --all-targets -- -D warnings`). `effects.nix` schedules a flake input update every day at 02:30. There are no GitHub workflows.
+nixbot builds the flake `checks`: `package` (build plus the tests that run without network), `formatting` (treefmt) and `clippy` (`cargo clippy --all-targets -- -D warnings`). `nix/effects.nix` schedules a flake input update every day at 02:30. There are no GitHub workflows.
 
 ## Architecture
 
