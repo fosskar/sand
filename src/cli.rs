@@ -4,11 +4,14 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use tracing_subscriber::{EnvFilter, fmt};
+
+use crate::backend::{Backend, LocalBackend};
 
 #[derive(Parser)]
 #[command(name = "sand", bin_name = "sand")]
@@ -271,6 +274,8 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
         .ok()
         .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok());
 
+    let backend = LocalBackend::new(db_path.clone(), project.as_ref().map(|p| p.id.clone()));
+
     // Check for pending project ID migration (UUID → git hash)
     if let Some(ref project) = project
         && let Some(ref old_id) = project.migrate_from
@@ -278,18 +283,9 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
         let new_id = &project.id;
         tracing::info!("Migrating project ID: {} → {}", old_id, new_id);
 
-        // Migrate LanceDB items
+        // Migrate LanceDB items and graph nodes
         let rt = tokio::runtime::Runtime::new()?;
-        if let Err(e) = rt.block_on(crate::db::migrate_project_id(&db_path, old_id, new_id)) {
-            tracing::warn!("Failed to migrate LanceDB items: {}", e);
-        }
-
-        // Migrate graph nodes
-        if let Ok(graph) = crate::graph::GraphStore::open(&access_db_path)
-            && let Err(e) = graph.migrate_project_id(old_id, new_id)
-        {
-            tracing::warn!("Failed to migrate graph nodes: {}", e);
-        }
+        rt.block_on(backend.migrate_project(old_id, new_id));
 
         // Clear migration marker
         if let Err(e) = crate::finish_project_migration(&access_db_path, old_id, new_id) {
@@ -305,8 +301,13 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
         tracing::info!("Project ID: {}", project.id);
     }
 
+    // Load embedder once (expensive operation)
+    tracing::info!("Loading embedder model...");
+    let embedder = Arc::new(crate::Embedder::new().context("Failed to load embedder")?);
+    tracing::info!("Embedder loaded successfully");
+
     // Run MCP server
-    crate::mcp::run(&db_path, project.map(|p| p.id))?;
+    crate::mcp::run(backend.with_background_work(embedder))?;
 
     Ok(())
 }
@@ -942,7 +943,7 @@ async fn recall(
 
     crate::backend::recall_pipeline(&mut db, &tracker, &graph, query, limit, filters, &config)
         .await
-        .map_err(|e| anyhow::anyhow!(e))
+        .map_err(|e| anyhow::anyhow!("Search failed: {}", e))
 }
 
 /// The fields `sand hook recall` reads from the hook JSON; the rest is ignored.

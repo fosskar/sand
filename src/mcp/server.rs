@@ -3,13 +3,11 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
-use tokio::sync::Semaphore;
 
-use crate::Embedder;
+use crate::backend::Backend;
 
 use super::protocol::{
     CallToolParams, INVALID_PARAMS, INVALID_REQUEST, InitializeResult, ListToolsResult,
@@ -26,57 +24,27 @@ pub struct RateLimitState {
 }
 
 /// Server context holding shared resources
-pub struct ServerContext {
-    /// Path to the database directory
-    pub db_path: PathBuf,
-    /// Path to the access tracking SQLite database
-    pub access_db_path: PathBuf,
-    /// Optional project ID for scoped operations
-    pub project_id: Option<String>,
-    /// Shared embedder instance (expensive to create, loaded once)
-    pub embedder: Arc<Embedder>,
+pub struct ServerContext<B> {
+    /// Store the tools act on
+    pub backend: B,
     /// Current working directory (for provenance tracking)
     pub cwd: PathBuf,
-    /// Semaphore to ensure only one consolidation task runs at a time
-    pub consolidation_semaphore: Arc<Semaphore>,
-    /// Semaphore to ensure only one compaction task runs at a time
-    pub compaction_semaphore: Arc<Semaphore>,
-    /// Counter for recall invocations (triggers periodic clustering and expired cleanup)
-    pub recall_count: std::sync::atomic::AtomicU64,
-    /// Counter for write operations (store/forget) that trigger periodic compaction
-    pub write_count: std::sync::atomic::AtomicU64,
     /// Rate limiter state (mutex protects window+count as a unit)
     pub rate_limit: Mutex<RateLimitState>,
 }
 
-/// Run the MCP server
-pub fn run(db_path: &Path, project_id: Option<String>) -> Result<()> {
+/// Run the MCP server on stdio
+pub fn run<B: Backend>(backend: B) -> Result<()> {
     // Create tokio runtime for async operations
     let rt = Runtime::new().context("Failed to create tokio runtime")?;
-
-    // Load embedder once (expensive operation)
-    tracing::info!("Loading embedder model...");
-    let embedder = Arc::new(Embedder::new().context("Failed to load embedder")?);
-    tracing::info!("Embedder loaded successfully");
-
-    // Derive access DB path as sibling to the LanceDB data directory
-    let sand_dir = db_path.parent().unwrap_or(db_path);
-    let access_db_path = sand_dir.join("access.db");
 
     // Get current working directory
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     // Create server context with shared resources
     let ctx = ServerContext {
-        db_path: db_path.to_path_buf(),
-        access_db_path,
-        project_id,
-        embedder,
+        backend,
         cwd,
-        consolidation_semaphore: Arc::new(Semaphore::new(1)),
-        compaction_semaphore: Arc::new(Semaphore::new(1)),
-        recall_count: std::sync::atomic::AtomicU64::new(0),
-        write_count: std::sync::atomic::AtomicU64::new(0),
         rate_limit: Mutex::new(RateLimitState {
             window_start_ms: 0,
             count: 0,
@@ -171,14 +139,8 @@ pub fn run(db_path: &Path, project_id: Option<String>) -> Result<()> {
 
     // Graceful shutdown: wait for in-flight background tasks before dropping
     tracing::info!("Client disconnected, shutting down...");
-    let consol_sem = ctx.consolidation_semaphore.clone();
-    let compact_sem = ctx.compaction_semaphore.clone();
     let _ = rt.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let _ = consol_sem.acquire().await;
-            let _ = compact_sem.acquire().await;
-        })
-        .await
+        tokio::time::timeout(std::time::Duration::from_secs(10), ctx.backend.finish()).await
     });
     drop(ctx);
     rt.shutdown_timeout(std::time::Duration::from_secs(5));
@@ -187,7 +149,11 @@ pub fn run(db_path: &Path, project_id: Option<String>) -> Result<()> {
 }
 
 /// Handle a single request (returns None for notifications)
-fn handle_request(rt: &Runtime, ctx: &ServerContext, line: &str) -> Option<Response> {
+fn handle_request<B: Backend>(
+    rt: &Runtime,
+    ctx: &ServerContext<B>,
+    line: &str,
+) -> Option<Response> {
     // Parse request
     let request: Request = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -288,9 +254,9 @@ fn handle_list_tools(id: Option<Value>) -> Response {
 }
 
 /// Handle tools/call request
-fn handle_call_tool(
+fn handle_call_tool<B: Backend>(
     rt: &Runtime,
-    ctx: &ServerContext,
+    ctx: &ServerContext<B>,
     id: Option<Value>,
     params: Option<Value>,
 ) -> Response {
