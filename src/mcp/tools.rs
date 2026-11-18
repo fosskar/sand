@@ -58,7 +58,7 @@ pub fn get_tools() -> Vec<Tool> {
                 "type": "string",
                 "enum": ["project", "global"],
                 "default": "project",
-                "description": "Where to store: 'project' (current project) or 'global' (all projects)"
+                "description": "Where to store: 'project' (facts specific to the current repository) or 'global' (everything else: user preferences and general knowledge that applies across projects)"
             },
             "replace_id": {
                 "type": "string",
@@ -87,12 +87,12 @@ pub fn get_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "store".to_string(),
-            description: "Store content for later retrieval. Use for preferences, facts, reference material, docs, or any information worth remembering. Long content is automatically chunked for better search. Use replace_id to atomically replace an existing item.".to_string(),
+            description: "Store content in the user's long-term memory, shared by all agents and sessions. Call this without being asked when the user states a preference or decision, says to remember something, or you learn a durable non-obvious fact. Use scope 'global' for anything not specific to the current repository: facts about the user, their preferences, and general knowledge such as how a tool or language behaves. Use the default 'project' scope for facts about the current repository. Long content is automatically chunked for better search. Use replace_id to atomically replace an existing item.".to_string(),
             input_schema: store_schema,
         },
         Tool {
             name: "recall".to_string(),
-            description: "Search stored content by semantic similarity. Returns matching items with relevant excerpts for chunked content.".to_string(),
+            description: "Search the user's long-term memory by semantic similarity, across project and global items. Call this at the start of a conversation and before work where earlier context could matter: user preferences, prior decisions, project conventions. Returns matching items with relevant excerpts for chunked content.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -243,7 +243,7 @@ fn handle_request(rt: &Runtime, ctx: &ServerContext, line: &str) -> Option<Respo
 /// Handle initialize request
 fn handle_initialize(id: Option<Value>) -> Response {
     let instructions = "\
-Sediment is a local-first semantic memory system. All data stays on disk — no API keys required.
+Sediment is the user's long-term memory, shared by all agents and sessions: recall before work where earlier context could matter, and store preferences, decisions and durable facts (scope global unless specific to the current repository). All data stays on disk — no API keys required.
 
 Environment variables (set before starting the server or CLI):
 - SEDIMENT_DB: Override database path (default: ~/.sediment/data). \
