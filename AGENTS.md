@@ -2,7 +2,7 @@
 
 Guidance for coding agents working in this repository.
 
-This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro. The binary, the library, the crate (`sediment-mcp`), the `SEDIMENT_*` settings and the default `~/.sediment` directory still carry the old name, and so does the text below.
+This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and project markers keep working (README.md, "Coming from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
 
 ## Build Commands
 
@@ -51,7 +51,7 @@ nixbot builds the flake `checks`: `package` (build plus the tests that run witho
 
 ## Architecture
 
-Sediment is a semantic memory system for AI agents, running as an MCP (Model Context Protocol) server. It combines vector search, a property graph, and access tracking into a unified memory intelligence layer.
+sand is a semantic memory system for AI agents, running as an MCP (Model Context Protocol) server. It combines vector search, a property graph, and access tracking into a unified memory intelligence layer.
 
 ### Two-Database Hybrid (all local, embedded, zero config)
 
@@ -60,7 +60,8 @@ Sediment is a semantic memory system for AI agents, running as an MCP (Model Con
 
 ### Core Components
 
-- **`src/main.rs`** - CLI entry point with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project) and MCP server startup
+- **`src/main.rs`**, **`src/bin/sediment.rs`** - the `sand` and `sediment` executables; both call `sand::cli::run`
+- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project) and MCP server startup
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
 - **`src/embedder.rs`** - Local embeddings via Candle. The `EmbeddingModel` enum lists the supported models; the default is `all-MiniLM-L6-v2` (384-dim vectors)
@@ -71,7 +72,7 @@ Sediment is a semantic memory system for AI agents, running as an MCP (Model Con
 - **`src/graph.rs`** - SQLite graph store: relationship tracking (RELATED, SUPERSEDES, CO_ACCESSED edges)
 - **`src/consolidation.rs`** - Background consolidation: auto-merging near-duplicates, linking similar items
 - **`src/compaction.rs`** - Background compaction of LanceDB storage: compacts fragments, prunes old versions, re-optimizes indices
-- **`src/error.rs`** - SedimentError enum with typed error variants (Database, Embedding, Arrow, etc.)
+- **`src/error.rs`** - SandError enum with typed error variants (Database, Embedding, Arrow, etc.)
 - **`src/retry.rs`** - Retry utilities with exponential backoff (3 attempts, 100ms–2s)
 
 ### MCP Server (`src/mcp/`)
@@ -93,18 +94,20 @@ Sediment is a semantic memory system for AI agents, running as an MCP (Model Con
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SEDIMENT_DB` | `~/.sediment/data` | Override database path. Also available as `--db` CLI flag. Useful for ephemeral/isolated storage: `SEDIMENT_DB=/tmp/task sediment store "..."` |
-| `SEDIMENT_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model. Options: `all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5` (768-dim) |
-| `SEDIMENT_PROJECT_ID` | derived from the current directory | CLI only. Use this project ID instead of detecting one; an empty value means no project (global context) |
-| `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA` | `0.12`, `2.0` | Override the BM25 boost parameters. Read only in builds with the `bench` feature |
+| `SAND_DB` | `~/.sand/data` | Override database path. Also available as `--db` CLI flag. Useful for ephemeral/isolated storage: `SAND_DB=/tmp/task sand store "..."` |
+| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model. Options: `all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5` (768-dim) |
+| `SAND_PROJECT_ID` | derived from the current directory | CLI only. Use this project ID instead of detecting one; an empty value means no project (global context) |
+| `SAND_FTS_BOOST_MAX`, `SAND_FTS_GAMMA` | `0.12`, `2.0` | Override the BM25 boost parameters. Read only in builds with the `bench` feature |
 
-Priority: `--db` flag > `SEDIMENT_DB` env var > default `~/.sediment/data`.
+Each `SAND_<name>` variable falls back to `SEDIMENT_<name>` when it is unset (`sand::setting`).
+
+Priority: `--db` flag > `SAND_DB` > `SEDIMENT_DB` > default `~/.sand/data`, or `~/.sediment/data` when `~/.sand` does not exist and `~/.sediment/data` does.
 
 ### Key Design Decisions
 
 - **Two-database hybrid**: LanceDB for vectors, SQLite for graph relationships + mutable counters
-- **Single central database** at `~/.sediment/data/` stores all projects; graph + access at `~/.sediment/access.db`
-- **Project scoping**: in a git repository the project ID is the root commit hash, so clones and worktrees share it. Its config is cached under `<parent of the database path>/projects/<sha256 of the repository path>/.sediment/config`. A directory outside git gets a UUID in `<root>/.sediment/config`
+- **Single central database** at `~/.sand/data/` stores all projects; graph + access at `~/.sand/access.db`
+- **Project scoping**: in a git repository the project ID is the root commit hash, so clones and worktrees share it. Its config is cached under `<parent of the database path>/projects/<sha256 of the repository path>/.sand/config`. A directory outside git gets a UUID in `<root>/.sand/config`. A missing `.sand/config` is copied from Sediment's `.sediment/config` in the same places; `.sediment/` also marks a project root
 - **Similarity boosting**: Same-project items unchanged, different projects get 0.875x penalty (12.5% spread)
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring. BM25 boost is additive (max 0.12, power-law gamma 2.0). FTS index rebuilt on each store
 - **Conflict detection**: Items with >=0.85 similarity flagged on store and enqueued for consolidation
@@ -190,7 +193,7 @@ CREATE TABLE consolidation_queue (
 ## Testing Notes
 
 - Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 33 tests are ignored in total and none of them run in the Nix build
-- Set `SEDIMENT_DB` to a temporary path when you run the ignored tests or the binary by hand. Project configs are written next to the database path, and the default is the real store in `~/.sediment`
-- `tests/cli_global_scope.rs` is an integration test that runs the built binary
+- Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project configs are written next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
+- `tests/cli_global_scope.rs` and `tests/cli_compat.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data
 - LanceDB operations are async; tests use `#[tokio::test]` or `tokio::runtime::Runtime`

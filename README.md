@@ -4,13 +4,13 @@ Semantic memory for AI agents. Local-first, MCP-native.
 
 sand is based on [Sediment](https://github.com/rendro/sediment) by [rendro](https://github.com/rendro), who designed and wrote the program described below. This repository starts from Sediment 0.5.1 and is maintained independently; it is not affiliated with or endorsed by the original author. Changes made here are listed in the commit history after the `Bump version to 0.5.1` commit.
 
-The program, its command, its crate and its settings are still named `sediment`. The text below is Sediment's documentation, and the benchmark numbers in it were measured by the original author.
+The text below is adapted from Sediment's documentation; the benchmark numbers in it were measured by the original author on Sediment.
 
 Combines vector search, a relationship graph, and access tracking into a unified memory intelligence layer — all running locally as a single binary.
 
-## Why Sediment?
+## Why sand?
 
-- **Single binary, zero config** — no Docker, no Postgres, no Qdrant. Just `sediment`.
+- **Single binary, zero config** — no Docker, no Postgres, no Qdrant. Just `sand`.
 - **50ms store, 103ms recall** — local embeddings and vector search at 1K items, no network round-trips.
 - **4-tool focused API** — `store`, `recall`, `list`, `forget`. That's it.
 - **Works everywhere** — macOS (Intel + ARM), Linux x86_64. All data stays on your machine.
@@ -38,9 +38,19 @@ cargo install --path .
 
 The crates.io package `sediment-mcp` and the Homebrew formula `rendro/tap/sediment` install the original Sediment, not this repository.
 
+## Coming from Sediment
+
+sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. It uses the same data and the same on-disk format, and it never moves or copies the database.
+
+- A `sediment` executable is installed next to `sand` and behaves the same. MCP client configurations that start `sediment` keep working.
+- Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_PROJECT_ID`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
+- Without a database path, sand uses `~/.sand/data`. If `~/.sand` does not exist and `~/.sediment/data` does, it uses `~/.sediment/data`.
+- A `.sediment/` directory still marks a project root. When `.sand/config` is missing, sand copies the project's `.sediment/config`, from the project directory or from the central state next to the database, so the project ID stays the same. The `.sediment/config` file is left in place.
+- `sand init` recognises the instructions Sediment wrote (`mcp__sediment__`) and does not add a second block.
+
 ## Setup
 
-Add Sediment to your MCP client configuration:
+Add sand to your MCP client configuration:
 
 ### Claude Desktop
 
@@ -49,8 +59,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "sediment": {
-      "command": "sediment"
+    "sand": {
+      "command": "sand"
     }
   }
 }
@@ -58,13 +68,13 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Claude Code
 
-Run `sediment init` in your project, or add manually to `~/.claude/settings.json`:
+Run `sand init` in your project, or add manually to `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
-    "sediment": {
-      "command": "sediment"
+    "sand": {
+      "command": "sand"
     }
   }
 }
@@ -77,8 +87,8 @@ Add to `.cursor/mcp.json` in your project:
 ```json
 {
   "mcpServers": {
-    "sediment": {
-      "command": "sediment"
+    "sand": {
+      "command": "sand"
     }
   }
 }
@@ -91,8 +101,8 @@ Add to `.vscode/mcp.json` in your project:
 ```json
 {
   "servers": {
-    "sediment": {
-      "command": "sediment"
+    "sand": {
+      "command": "sand"
     }
   }
 }
@@ -105,8 +115,8 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 ```json
 {
   "mcpServers": {
-    "sediment": {
-      "command": "sediment"
+    "sand": {
+      "command": "sand"
     }
   }
 }
@@ -118,8 +128,8 @@ Go to **Settings > Tools > AI Assistant > MCP Servers**, click **+**, and add:
 
 ```json
 {
-  "sediment": {
-    "command": "sediment"
+  "sand": {
+    "command": "sand"
   }
 }
 ```
@@ -131,8 +141,8 @@ Add to `~/.zed/settings.json` on macOS or `~/.config/zed/settings.json` on Linux
 ```json
 {
   "context_servers": {
-    "sediment": {
-      "command": "sediment",
+    "sand": {
+      "command": "sand",
       "args": [],
     }
   }
@@ -151,15 +161,15 @@ Add to `~/.zed/settings.json` on macOS or `~/.config/zed/settings.json` on Linux
 ## CLI
 
 ```bash
-sediment                          # Start MCP server
-sediment init                     # Set up Claude Code integration
-sediment stats                    # Show database statistics
-sediment list                     # List stored items
-sediment list --scope global      # List global items
-sediment store "some content"     # Store content
-sediment store -                  # Store content from stdin
-sediment recall "search query"    # Search by semantic similarity
-sediment forget <id>              # Delete an item by ID
+sand                              # Start MCP server
+sand init                         # Set up Claude Code integration
+sand stats                        # Show database statistics
+sand list                         # List stored items
+sand list --scope global          # List global items
+sand store "some content"         # Store content
+sand store -                      # Store content from stdin
+sand recall "search query"        # Search by semantic similarity
+sand forget <id>                  # Delete an item by ID
 ```
 
 All commands support `--json` for machine-readable output.
@@ -168,14 +178,14 @@ All commands support `--json` for machine-readable output.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SEDIMENT_DB` | `~/.sediment/data` | Override database path. Useful for ephemeral or isolated storage. |
-| `SEDIMENT_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model (`all-MiniLM-L6-v2`, `bge-small-en-v1.5`). |
+| `SAND_DB` | `~/.sand/data` | Override database path. Useful for ephemeral or isolated storage. |
+| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model (`all-MiniLM-L6-v2`, `bge-small-en-v1.5`). |
 
 Example — use a throwaway database for a task:
 
 ```bash
-SEDIMENT_DB=/tmp/task-xyz sediment store "temporary context"
-SEDIMENT_DB=/tmp/task-xyz sediment recall "context"
+SAND_DB=/tmp/task-xyz sand store "temporary context"
+SAND_DB=/tmp/task-xyz sand recall "context"
 ```
 
 The `--db` CLI flag takes the same value and overrides the env var if both are set.
@@ -228,8 +238,8 @@ Benchmarked against 5 alternatives with 1,000 memories and 200 queries. See [BEN
 
 ### Data Location
 
-- Vector store: `~/.sediment/data/`
-- Graph + access tracking: `~/.sediment/access.db`
+- Vector store: `~/.sand/data/`
+- Graph + access tracking: `~/.sand/access.db`
 
 Everything runs locally. Your data never leaves your machine.
 
