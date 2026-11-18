@@ -682,14 +682,11 @@ impl Database {
 
     /// Store an item with automatic chunking for long content
     ///
+    /// An item without a `project_id` is stored as global.
+    ///
     /// Returns a `StoreResult` containing the new item ID and any potential conflicts
     /// (items with similarity >= 0.85 to the new content).
     pub async fn store_item(&mut self, mut item: Item) -> Result<StoreResult> {
-        // Set project_id if not already set and we have a current project
-        if item.project_id.is_none() {
-            item.project_id = self.project_id.clone();
-        }
-
         // Determine if we need to chunk (by character count, not byte count,
         // so multi-byte UTF-8 content isn't prematurely chunked)
         let should_chunk = item.content.chars().count() > CHUNK_THRESHOLD;
@@ -2336,6 +2333,52 @@ mod tests {
             !table_names.contains(&"items_migrated".to_string()),
             "Staging table should be dropped"
         );
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_store_item_without_project_id_stays_global() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("data");
+        let project_id = "00000000000000000000000000000000000000aa";
+
+        let mut db = Database::open_with_project(&db_path, Some(project_id.to_string()))
+            .await
+            .unwrap();
+
+        let global_id = db
+            .store_item(Item::new("global note about tabs over spaces"))
+            .await
+            .unwrap()
+            .id;
+        let project_item_id = db
+            .store_item(Item::new("project note").with_project_id(project_id))
+            .await
+            .unwrap()
+            .id;
+
+        let global_item = db.get_item(&global_id).await.unwrap().unwrap();
+        assert_eq!(global_item.project_id, None);
+
+        let global = db
+            .list_items(Some(10), crate::ListScope::Global)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = global.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec![global_id.as_str()]);
+
+        let project = db
+            .list_items(Some(10), crate::ListScope::Project)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = project.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec![project_item_id.as_str()]);
+
+        let all = db
+            .list_items(Some(10), crate::ListScope::All)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 2);
     }
 
     #[tokio::test]

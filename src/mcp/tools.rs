@@ -1282,6 +1282,117 @@ mod tests {
         );
     }
 
+    fn store_id(result: &CallToolResult) -> String {
+        assert!(
+            result.is_error.is_none(),
+            "store failed: {:?}",
+            result.content
+        );
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        parsed["id"].as_str().unwrap().to_string()
+    }
+
+    async fn list_ids(ctx: &ServerContext, scope: &str) -> Vec<String> {
+        let result = execute_tool(ctx, "list", Some(json!({ "scope": scope }))).await;
+        assert!(
+            result.is_error.is_none(),
+            "list failed: {:?}",
+            result.content
+        );
+        let text = &result.content[0].text;
+        if text == "No items stored yet." {
+            return Vec::new();
+        }
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        parsed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_store_global_scope_is_global() {
+        let (mut ctx, _tmp) = setup_test_context().await;
+        // list rejects project ids that are not hex
+        ctx.project_id = Some("00000000000000000000000000000000000000aa".to_string());
+
+        let result = execute_tool(
+            &ctx,
+            "store",
+            Some(json!({ "content": "the user prefers tabs over spaces", "scope": "global" })),
+        )
+        .await;
+        let id = store_id(&result);
+
+        assert_eq!(list_ids(&ctx, "global").await, vec![id.clone()]);
+        assert!(list_ids(&ctx, "project").await.is_empty());
+        assert_eq!(list_ids(&ctx, "all").await, vec![id.clone()]);
+
+        // another project sees the item as global: no cross-project flag, may forget it
+        ctx.project_id = Some("00000000000000000000000000000000000000bb".to_string());
+        let recall = execute_tool(
+            &ctx,
+            "recall",
+            Some(json!({ "query": "the user prefers tabs over spaces" })),
+        )
+        .await;
+        assert!(
+            recall.is_error.is_none(),
+            "recall failed: {:?}",
+            recall.content
+        );
+        let parsed: Value = serde_json::from_str(&recall.content[0].text).unwrap();
+        let hit = parsed["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id.as_str())
+            .expect("recall should return the global item");
+        assert!(hit.get("cross_project").is_none(), "got: {}", hit);
+
+        let forget = execute_tool(&ctx, "forget", Some(json!({ "id": id }))).await;
+        assert!(
+            forget.is_error.is_none(),
+            "forget failed: {:?}",
+            forget.content
+        );
+        assert!(list_ids(&ctx, "all").await.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_store_replace_id_global_scope() {
+        let (mut ctx, _tmp) = setup_test_context().await;
+        ctx.project_id = Some("00000000000000000000000000000000000000aa".to_string());
+
+        let old_id = store_id(
+            &execute_tool(
+                &ctx,
+                "store",
+                Some(json!({ "content": "global note, first version", "scope": "global" })),
+            )
+            .await,
+        );
+        let new_id = store_id(
+            &execute_tool(
+                &ctx,
+                "store",
+                Some(json!({
+                    "content": "global note, second version",
+                    "scope": "global",
+                    "replace_id": old_id
+                })),
+            )
+            .await,
+        );
+
+        assert_eq!(list_ids(&ctx, "global").await, vec![new_id]);
+        assert!(list_ids(&ctx, "project").await.is_empty());
+    }
+
     #[tokio::test]
     #[ignore] // requires model download
     async fn test_store_replace_id_invalid() {
