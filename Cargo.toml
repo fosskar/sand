@@ -10,6 +10,7 @@ license = "MIT"
 readme = "README.md"
 keywords = ["mcp", "memory", "semantic-search", "ai-agent", "embeddings"]
 categories = ["command-line-utilities", "database"]
+default-run = "sand"
 
 [lib]
 name = "sand"
@@ -18,6 +19,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "sand"
 path = "src/main.rs"
+
+[[bin]]
+name = "sediment"
+path = "src/bin/sediment.rs"
 
 [dependencies]
 # Database - LanceDB for vector storage

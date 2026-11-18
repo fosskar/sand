@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 pub mod access;
 pub mod chunker;
+pub mod cli;
 pub mod compaction;
 pub mod consolidation;
 pub mod db;
