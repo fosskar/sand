@@ -68,7 +68,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 ### Core Components
 
 - **`src/main.rs`**, **`src/bin/sediment.rs`** - the `sand` and `sediment` executables; both call `sand::cli::run`
-- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and shares `recall` with the `recall` subcommand
+- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
 - **`src/backend/`** - The `Backend` trait: the store operations the CLI and the MCP server call. `LocalBackend` implements it on the local database, runs the recall pipeline, and with `with_background_work` (MCP server) the background tasks
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
