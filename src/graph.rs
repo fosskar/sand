@@ -292,7 +292,7 @@ impl GraphStore {
         }
 
         // Deduplicate by target_id, keeping highest count
-        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.sort_by_key(|a| std::cmp::Reverse(a.1));
         let mut seen = std::collections::HashSet::new();
         results.retain(|(id, _)| seen.insert(id.clone()));
 
