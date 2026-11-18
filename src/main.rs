@@ -107,6 +107,13 @@ enum Commands {
         #[arg(long)]
         no_prune: bool,
     },
+
+    /// Drain the consolidation queue (merge near-duplicates, link related)
+    Consolidate {
+        /// Stop after this many batches (each batch handles 5 candidates)
+        #[arg(long, default_value_t = 100)]
+        max_batches: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -145,7 +152,75 @@ fn main() -> Result<()> {
         Some(Commands::Recall { query, limit }) => run_recall(cli.db, &query, limit, cli.json),
         Some(Commands::Forget { id }) => run_forget(cli.db, &id, cli.json),
         Some(Commands::Compact { force, no_prune }) => run_compact(cli.db, force, no_prune),
+        Some(Commands::Consolidate { max_batches }) => {
+            run_consolidate(cli.db, max_batches, cli.json)
+        }
     }
+}
+
+/// Drain the consolidation queue until empty or `max_batches` is reached.
+///
+/// Upstream only drains from MCP server mode: `spawn_consolidation` has a
+/// single caller in `mcp/tools.rs`, fired after each recall. CLI `store`
+/// enqueues candidates that nothing ever processes. A spawned task would
+/// not survive a CLI process exit, so batches are awaited in-line.
+fn run_consolidate(
+    db_override: Option<PathBuf>,
+    max_batches: usize,
+    output_json: bool,
+) -> Result<()> {
+    let ctx = cli_context(db_override);
+
+    if !ctx.db_path.exists() {
+        if output_json {
+            println!("{}", json!({"batches": 0, "remaining": 0}));
+        } else {
+            println!("Database does not exist yet. Nothing to consolidate.");
+        }
+        return Ok(());
+    }
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let embedder = std::sync::Arc::new(sediment::Embedder::new()?);
+        let mut batches = 0usize;
+
+        while batches < max_batches {
+            let queue = sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
+            let empty = queue.fetch_pending(1)?.is_empty();
+            drop(queue);
+            if empty {
+                break;
+            }
+
+            sediment::consolidation::run_consolidation_batch(
+                &ctx.db_path,
+                &ctx.access_db_path,
+                ctx.project_id.clone(),
+                embedder.clone(),
+            )
+            .await?;
+            batches += 1;
+        }
+
+        // fetch_pending casts its limit to i64; keep it well inside range
+        // rather than relying on usize::MAX wrapping to SQLite's LIMIT -1.
+        const REMAINING_CAP: usize = 1_000_000;
+        let queue = sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
+        let remaining = queue.fetch_pending(REMAINING_CAP)?.len();
+        queue.cleanup_processed().ok();
+
+        if output_json {
+            println!("{}", json!({ "batches": batches, "remaining": remaining }));
+        } else {
+            println!(
+                "Processed {} batch(es); {} candidate(s) remaining.",
+                batches, remaining
+            );
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 /// Run the MCP server (default behavior)

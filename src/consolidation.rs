@@ -180,7 +180,7 @@ pub fn spawn_consolidation(
 }
 
 /// Process up to 5 pending consolidation candidates.
-async fn run_consolidation_batch(
+pub async fn run_consolidation_batch(
     db_path: &Path,
     access_db_path: &Path,
     project_id: Option<String>,
