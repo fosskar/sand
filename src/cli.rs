@@ -288,12 +288,12 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// Check if a file contains sand instructions
+/// Check if a file contains sand instructions, or the ones Sediment wrote
 fn has_sand_instructions(path: &PathBuf) -> bool {
     if path.exists()
         && let Ok(content) = std::fs::read_to_string(path)
     {
-        return content.contains("mcp__sand__");
+        return content.contains("mcp__sand__") || content.contains("mcp__sediment__");
     }
     false
 }
