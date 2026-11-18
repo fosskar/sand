@@ -928,19 +928,19 @@ async fn recall(
     ctx: &CliContext,
     query: &str,
     limit: usize,
-) -> Result<crate::mcp::tools::RecallResult> {
+) -> Result<crate::backend::RecallResult> {
     let mut db = crate::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
 
     let tracker = crate::access::AccessTracker::open(&ctx.access_db_path)?;
     let graph = crate::graph::GraphStore::open(&ctx.access_db_path)?;
 
     let filters = crate::ItemFilters::new();
-    let config = crate::mcp::tools::RecallConfig {
+    let config = crate::backend::RecallConfig {
         enable_background_tasks: false,
         ..Default::default()
     };
 
-    crate::mcp::tools::recall_pipeline(&mut db, &tracker, &graph, query, limit, filters, &config)
+    crate::backend::recall_pipeline(&mut db, &tracker, &graph, query, limit, filters, &config)
         .await
         .map_err(|e| anyhow::anyhow!(e))
 }

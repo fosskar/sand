@@ -12,11 +12,11 @@ use rand::rngs::StdRng;
 use tempfile::TempDir;
 
 use sand::access::AccessTracker;
+use sand::backend::{RecallConfig, recall_pipeline};
 use sand::db::Database;
 use sand::embedder::Embedder;
 use sand::graph::GraphStore;
 use sand::item::{Item, ItemFilters};
-use sand::mcp::{RecallConfig, recall_pipeline};
 
 const SHORT_TEXTS: &[&str] = &[
     "User prefers dark mode for all editors",

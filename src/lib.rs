@@ -17,6 +17,7 @@ use std::process::Command;
 use uuid::Uuid;
 
 pub mod access;
+pub mod backend;
 pub mod chunker;
 pub mod cli;
 pub mod compaction;
