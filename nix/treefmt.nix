@@ -8,5 +8,7 @@
       # match Cargo.toml so treefmt orders imports the way cargo fmt does
       edition = "2024";
     };
+    shellcheck.enable = true;
+    shfmt.enable = true;
   };
 }
