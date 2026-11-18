@@ -123,17 +123,23 @@ pub fn setting(name: &str) -> Option<String> {
 
 /// Get the central database path.
 ///
-/// Returns `~/.sand/data` or the path specified in the `SAND_DB` setting.
+/// Returns the path in the `SAND_DB` setting, else `~/.sand/data`, else Sediment's
+/// `~/.sediment/data` when only that exists.
 /// Note: LanceDB uses a directory, not a single file.
 pub fn central_db_path() -> PathBuf {
     if let Some(path) = setting("DB") {
         return PathBuf::from(path);
     }
 
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".sand")
-        .join("data")
+    default_db_path(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+}
+
+fn default_db_path(home: &Path) -> PathBuf {
+    let legacy = home.join(".sediment").join("data");
+    if !home.join(".sand").exists() && legacy.exists() {
+        return legacy;
+    }
+    home.join(".sand").join("data")
 }
 
 /// Project configuration stored in `.sand/config`
@@ -416,6 +422,19 @@ mod tests {
     fn test_list_scope_default_is_project() {
         // Fix #17: ListScope::default() should be Project, matching the tool schema default
         assert_eq!(ListScope::default(), ListScope::Project);
+    }
+
+    #[test]
+    fn test_default_db_path_falls_back_to_sediment() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        assert_eq!(default_db_path(home), home.join(".sand/data"));
+
+        std::fs::create_dir_all(home.join(".sediment/data")).unwrap();
+        assert_eq!(default_db_path(home), home.join(".sediment/data"));
+
+        std::fs::create_dir(home.join(".sand")).unwrap();
+        assert_eq!(default_db_path(home), home.join(".sand/data"));
     }
 
     #[test]
