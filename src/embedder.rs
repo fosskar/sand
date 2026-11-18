@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
-use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
+use hf_hub::HFClientSync;
 use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
 use tracing::info;
 
@@ -373,27 +373,27 @@ impl Embedder {
 
 /// Download model files from Hugging Face Hub
 fn download_model(model_id: &str, revision: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
-    let api = ApiBuilder::from_env()
-        .with_progress(true)
-        .build()
+    let api = HFClientSync::new()
         .map_err(|e| SandError::ModelLoading(format!("Failed to create HF API: {}", e)))?;
 
-    let repo = api.repo(Repo::with_revision(
-        model_id.to_string(),
-        RepoType::Model,
-        revision.to_string(),
-    ));
+    let (owner, name) = model_id
+        .split_once('/')
+        .ok_or_else(|| SandError::ModelLoading(format!("Invalid model id: {}", model_id)))?;
+    let repo = api.model(owner, name);
+    let get = |filename: &str| {
+        repo.download_file()
+            .filename(filename)
+            .revision(revision)
+            .send()
+    };
 
-    let model_path = repo
-        .get("model.safetensors")
+    let model_path = get("model.safetensors")
         .map_err(|e| SandError::ModelLoading(format!("Failed to download model: {}", e)))?;
 
-    let tokenizer_path = repo
-        .get("tokenizer.json")
+    let tokenizer_path = get("tokenizer.json")
         .map_err(|e| SandError::ModelLoading(format!("Failed to download tokenizer: {}", e)))?;
 
-    let config_path = repo
-        .get("config.json")
+    let config_path = get("config.json")
         .map_err(|e| SandError::ModelLoading(format!("Failed to download config: {}", e)))?;
 
     Ok((model_path, tokenizer_path, config_path))

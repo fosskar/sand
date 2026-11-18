@@ -3,6 +3,7 @@
   rustPlatform,
   protobuf,
   pkg-config,
+  aws-lc,
   oniguruma,
   sqlite,
   zstd,
@@ -25,12 +26,13 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ../Cargo.lock;
 
-  # cargoSetupHook makes zstd-sys, onig_sys and libsqlite3-sys link the system libraries
+  # cargoSetupHook makes aws-lc-sys, zstd-sys, onig_sys and libsqlite3-sys link the system libraries
   nativeBuildInputs = [
     protobuf
     pkg-config
   ];
   buildInputs = [
+    aws-lc
     oniguruma
     sqlite
     zstd
