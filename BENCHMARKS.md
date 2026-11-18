@@ -53,7 +53,8 @@ This section re-measures the embedding models on sand and adds newer candidates.
 - **Builds**: `cargo build --release --features bench`. The model rows were measured on the sediment 0.5.1 code base plus the models of this change. The default model was re-run on sand 0.6.0 (R@1 49.5%, R@5 78.5%, MRR 62.1%, nDCG@5 59.1%), which is within the run-to-run spread below. The rename did not change the embedding or search code.
 - **Run-to-run spread**: background consolidation runs concurrently with the queries, so repeated runs differ. Runs of all-MiniLM-L6-v2 gave R@1 49.5 to 50.0%, R@5 77.5 to 78.5% and MRR 61.8 to 62.1% (three runs). Differences below about 1 point are noise. One query is 0.5 points.
 - **Quality** runs ran up to five at a time while other builds ran. Quality does not depend on load.
-- **Latency** is a separate pass with the latency phase only (100 stores, then 50 recalls), one model at a time, started only when the 1-minute load average was below 2 and no build was running. Each model ran three times. The table shows the median p50 and the highest load average at the start and end of the three runs.
+- **Latency** is a separate pass with the latency phase only (100 stores, then 50 recalls), one model at a time, started only when the 1-minute load average was below 2 and no build was running. Each model ran three times. The table shows the median p50 and the highest 1-minute load average at the start and end of the three runs. The end value includes the load of the run itself.
+- **Latency binary**: all models ran on the scratch build that contains every model. The default model on the sand 0.6.0 binary gave a median store p50 of 39 ms and recall p50 of 71 ms over three runs, against 38 ms and 70 ms on the scratch build.
 - **Peak RSS** is the highest `VmHWM` of the server process over all phases.
 - **Correctness of the embeddings**: for every model, query and document vectors from Candle were compared with sentence-transformers 6.2.0 using the prompts and pooling from the model card. The lowest cosine similarity was 0.9968 (granite-embedding-small-english-r2), all others 0.999 or higher.
 - Models marked "no" in the Offered column were measured with a scratch build and are not part of the `EmbeddingModel` enum. The ModernBERT models (granite-embedding-small-english-r2, granite-embedding-english-r2, gte-modernbert-base) need a ModernBERT encoder without the masked-LM head, which candle-transformers 0.8 does not export and candle 0.9 does. Candle 0.9 needs `half` 2.5 while lancedb 0.17 pins `half = 2.4.1`. The scratch build contains a copy of candle's `modernbert.rs` instead.
@@ -62,26 +63,26 @@ Candidates that were not measured: snowflake-arctic-embed-m-v2.0 (custom `GteMod
 
 ### Results in the sand pipeline
 
-Recall p50 and Store p50 are medians of three latency-phase runs. Cells marked open are not measured yet: while other builds ran, the load average did not drop below 2.
+Recall p50 and Store p50 are medians of three latency-phase runs.
 
 | Model | Dim | Size (MB) | Recall@1 | Recall@5 | MRR | nDCG@5 | Recency@1 | Consolidation | Store p50 | Recall p50 | Load start/end | Peak RSS (MiB) | Offered |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| all-MiniLM-L6-v2 | 384 | 91 | 49.5% | 78.0% | 61.8% | 58.8% | 100% | 99% | open | open | - | 335 | default |
-| e5-small-v2 | 384 | 133 | 42.0% | 70.5% | 53.5% | 51.8% | 98% | 99% | open | open | - | 426 | yes |
-| bge-small-en-v1.5 | 384 | 133 | 46.5% | 75.0% | 58.4% | 55.5% | 100% | 99% | open | open | - | 413 | yes |
-| bge-base-en-v1.5 | 768 | 438 | 50.0% | 75.5% | 61.4% | 57.0% | 100% | 99% | open | open | - | 861 | yes |
-| all-MiniLM-L12-v2 | 384 | 133 | 49.0% | 81.0% | 62.7% | 60.9% | 100% | 99% | open | open | - | 392 | added |
-| snowflake-arctic-embed-m-v1.5 | 768 | 436 | 50.0% | 77.5% | 61.8% | 58.1% | 100% | 99% | open | open | - | 859 | added |
-| snowflake-arctic-embed-xs | 384 | 90 | 43.5% | 68.5% | 55.0% | 51.7% | 100% | 99% | open | open | - | 361 | no |
-| snowflake-arctic-embed-s | 384 | 133 | 45.5% | 71.5% | 57.3% | 54.0% | 100% | 99% | open | open | - | 388 | no |
-| snowflake-arctic-embed-m | 768 | 436 | 48.0% | 73.5% | 59.2% | 56.0% | 100% | 99% | open | open | - | 858 | no |
-| gte-small | 384 | 67 | 48.0% | 73.0% | 58.4% | 54.8% | 100% | 99% | open | open | - | 417 | no |
-| gte-base | 768 | 219 | 42.5% | 70.0% | 54.9% | 52.2% | 100% | 99% | open | open | - | 704 | no |
-| mxbai-embed-xsmall-v1 | 384 | 48 | 48.5% | 77.5% | 61.2% | 57.7% | 100% | 99% | open | open | - | 373 | no |
-| multilingual-e5-small | 384 | 471 | 40.5% | 67.5% | 51.4% | 48.9% | 100% | 99% | open | open | - | 1196 | no |
-| granite-embedding-small-english-r2 | 384 | 95 | 49.5% | 73.5% | 60.0% | 55.8% | 100% | 99% | open | open | - | 467 | no (ModernBERT) |
-| granite-embedding-english-r2 | 768 | 298 | 49.0% | 73.0% | 59.7% | 56.8% | 100% | 99% | open | open | - | 903 | no (ModernBERT) |
-| gte-modernbert-base | 768 | 298 | 47.0% | 79.0% | 60.8% | 57.1% | 100% | 99% | open | open | - | 903 | no (ModernBERT) |
+| all-MiniLM-L6-v2 | 384 | 91 | 49.5% | 78.0% | 61.8% | 58.8% | 100% | 99% | 38ms | 70ms | 1.97/5.42 | 335 | default |
+| e5-small-v2 | 384 | 133 | 42.0% | 70.5% | 53.5% | 51.8% | 98% | 99% | 58ms | 87ms | 1.75/6.40 | 426 | yes |
+| bge-small-en-v1.5 | 384 | 133 | 46.5% | 75.0% | 58.4% | 55.5% | 100% | 99% | 54ms | 85ms | 1.86/6.15 | 413 | yes |
+| bge-base-en-v1.5 | 768 | 438 | 50.0% | 75.5% | 61.4% | 57.0% | 100% | 99% | 86ms | 117ms | 1.70/3.61 | 861 | yes |
+| all-MiniLM-L12-v2 | 384 | 133 | 49.0% | 81.0% | 62.7% | 60.9% | 100% | 99% | 55ms | 80ms | 1.85/5.45 | 392 | added |
+| snowflake-arctic-embed-m-v1.5 | 768 | 436 | 50.0% | 77.5% | 61.8% | 58.1% | 100% | 99% | 90ms | 108ms | 1.75/8.25 | 859 | added |
+| snowflake-arctic-embed-xs | 384 | 90 | 43.5% | 68.5% | 55.0% | 51.7% | 100% | 99% | 39ms | 68ms | 1.89/4.54 | 361 | no |
+| snowflake-arctic-embed-s | 384 | 133 | 45.5% | 71.5% | 57.3% | 54.0% | 100% | 99% | 55ms | 89ms | 1.91/4.33 | 388 | no |
+| snowflake-arctic-embed-m | 768 | 436 | 48.0% | 73.5% | 59.2% | 56.0% | 100% | 99% | 83ms | 114ms | 1.95/4.43 | 858 | no |
+| gte-small | 384 | 67 | 48.0% | 73.0% | 58.4% | 54.8% | 100% | 99% | 52ms | 83ms | 1.69/6.99 | 417 | no |
+| gte-base | 768 | 219 | 42.5% | 70.0% | 54.9% | 52.2% | 100% | 99% | 89ms | 100ms | 1.97/5.42 | 704 | no |
+| mxbai-embed-xsmall-v1 | 384 | 48 | 48.5% | 77.5% | 61.2% | 57.7% | 100% | 99% | 37ms | 74ms | 1.71/2.06 | 373 | no |
+| multilingual-e5-small | 384 | 471 | 40.5% | 67.5% | 51.4% | 48.9% | 100% | 99% | 58ms | 89ms | 1.65/3.87 | 1196 | no |
+| granite-embedding-small-english-r2 | 384 | 95 | 49.5% | 73.5% | 60.0% | 55.8% | 100% | 99% | 51ms | 82ms | 1.77/3.48 | 467 | no (ModernBERT) |
+| granite-embedding-english-r2 | 768 | 298 | 49.0% | 73.0% | 59.7% | 56.8% | 100% | 99% | 82ms | 99ms | 1.72/5.38 | 903 | no (ModernBERT) |
+| gte-modernbert-base | 768 | 298 | 47.0% | 79.0% | 60.8% | 57.1% | 100% | 99% | 81ms | 95ms | 1.85/6.32 | 903 | no (ModernBERT) |
 
 ### Embedding quality without the pipeline
 
@@ -156,7 +157,7 @@ The only multilingual model, multilingual-e5-small, is not better on German than
 | bge-small-en-v1.5 | 46.5 / 75.0 / 58.4 / 55.5 | 46.5 / 75.0 / 58.4 / 55.5 |
 | bge-base-en-v1.5 | 50.5 / 76.0 / 62.0 / 57.6 | 50.0 / 75.5 / 61.4 / 57.0 |
 
-Quality matches within the run-to-run spread, except e5-small-v2 R@5 (+2.5 points, 5 queries). e5-small-v2 also missed one of the 50 temporal sequences (Recency@1 98%). Upstream reports 100% for all models. Latency is not comparable: upstream measured on an Apple M3 Max, this table on an x86 CPU with Candle's CPU backend.
+Quality matches within the run-to-run spread, except e5-small-v2 R@5 (+2.5 points, 5 queries). e5-small-v2 also missed one of the 50 temporal sequences (Recency@1 98%). Upstream reports 100% for all models. Latency is not directly comparable: upstream measured the full suite on an Apple M3 Max (all-MiniLM-L6-v2 store p50 50 ms, recall p50 103 ms), this table the latency phase alone on an x86 CPU (38 ms and 70 ms).
 
 ### Conclusion
 
