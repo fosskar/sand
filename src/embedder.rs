@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
@@ -29,14 +29,38 @@ pub enum EmbeddingModel {
     BgeSmallEnV15,
     /// BAAI/bge-base-en-v1.5 (query prefix, no doc prefix, 768-dim)
     BgeBaseEnV15,
+    /// sentence-transformers/all-MiniLM-L12-v2 (no prefixes, 384-dim)
+    AllMiniLmL12V2,
+    /// Snowflake/snowflake-arctic-embed-m-v1.5 (query prefix, no doc prefix, CLS pooling, 768-dim)
+    ArcticEmbedMV15,
+}
+
+/// How token embeddings are pooled into one vector
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pooling {
+    /// Mean over the tokens, weighted by the attention mask
+    Mean,
+    /// Hidden state of the first ([CLS]) token
+    Cls,
 }
 
 impl EmbeddingModel {
     /// Embedding dimension for this model
     pub fn embedding_dim(&self) -> usize {
         match self {
-            Self::AllMiniLmL6V2 | Self::E5SmallV2 | Self::BgeSmallEnV15 => 384,
-            Self::BgeBaseEnV15 => 768,
+            Self::AllMiniLmL6V2 | Self::E5SmallV2 | Self::BgeSmallEnV15 | Self::AllMiniLmL12V2 => {
+                384
+            }
+            Self::BgeBaseEnV15 | Self::ArcticEmbedMV15 => 768,
+        }
+    }
+
+    /// Pooling the model was trained with (its 1_Pooling/config.json)
+    pub fn pooling(&self) -> Pooling {
+        match self {
+            Self::ArcticEmbedMV15 => Pooling::Cls,
+            // the bge model cards say CLS; mean stays so existing bge stores keep matching
+            _ => Pooling::Mean,
         }
     }
 
@@ -47,6 +71,8 @@ impl EmbeddingModel {
             Self::E5SmallV2 => "intfloat/e5-small-v2",
             Self::BgeSmallEnV15 => "BAAI/bge-small-en-v1.5",
             Self::BgeBaseEnV15 => "BAAI/bge-base-en-v1.5",
+            Self::AllMiniLmL12V2 => "sentence-transformers/all-MiniLM-L12-v2",
+            Self::ArcticEmbedMV15 => "Snowflake/snowflake-arctic-embed-m-v1.5",
         }
     }
 
@@ -57,6 +83,8 @@ impl EmbeddingModel {
             Self::E5SmallV2 => "ffb93f3bd4047442299a41ebb6fa998a38507c52",
             Self::BgeSmallEnV15 => "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
             Self::BgeBaseEnV15 => "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a",
+            Self::AllMiniLmL12V2 => "a50ef00143b4d5391434df20ae11632588ac25be",
+            Self::ArcticEmbedMV15 => "e58a8f756156a1293d763f17e3aae643474e9b8a",
         }
     }
 
@@ -72,6 +100,12 @@ impl EmbeddingModel {
             }
             Self::BgeBaseEnV15 => {
                 "c7c1988aae201f80cf91a5dbbd5866409503b89dcaba877ca6dba7dd0a5167d7"
+            }
+            Self::AllMiniLmL12V2 => {
+                "d2d541e5f101695ae495eacd867a8d025ecfe8f9674fb23aa6cf93cdb60a5542"
+            }
+            Self::ArcticEmbedMV15 => {
+                "463d27a3e88a748997316367c419bbdab4d809300a5f24b9b19ba9b2dc08ffdd"
             }
         }
     }
@@ -89,6 +123,12 @@ impl EmbeddingModel {
             Self::BgeBaseEnV15 => {
                 "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
             }
+            Self::AllMiniLmL12V2 => {
+                "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+            }
+            Self::ArcticEmbedMV15 => {
+                "91f1def9b9391fdabe028cd3f3fcc4efd34e5d1f08c3bf2de513ebb5911a1854"
+            }
         }
     }
 
@@ -105,26 +145,36 @@ impl EmbeddingModel {
             Self::BgeBaseEnV15 => {
                 "bc00af31a4a31b74040d73370aa83b62da34c90b75eb77bfa7db039d90abd591"
             }
+            Self::AllMiniLmL12V2 => {
+                "bc451f333af67312ba0de5018ef1c9ba663cb18549443e568f0bd35262dc1c48"
+            }
+            Self::ArcticEmbedMV15 => {
+                "d2dddc06af0aeeb7fd3289a3dee1ac76dce0c3df2467cadd26f5f731f8d7919b"
+            }
         }
     }
 
     /// Apply query prefix for asymmetric search
     pub fn prefix_query<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self {
-            Self::AllMiniLmL6V2 => std::borrow::Cow::Borrowed(text),
+            Self::AllMiniLmL6V2 | Self::AllMiniLmL12V2 => std::borrow::Cow::Borrowed(text),
             Self::E5SmallV2 => std::borrow::Cow::Owned(format!("query: {text}")),
-            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 => std::borrow::Cow::Owned(format!(
-                "Represent this sentence for searching relevant passages: {text}"
-            )),
+            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 | Self::ArcticEmbedMV15 => {
+                std::borrow::Cow::Owned(format!(
+                    "Represent this sentence for searching relevant passages: {text}"
+                ))
+            }
         }
     }
 
     /// Apply document prefix for asymmetric search
     pub fn prefix_document<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         match self {
-            Self::AllMiniLmL6V2 => std::borrow::Cow::Borrowed(text),
+            Self::AllMiniLmL6V2 | Self::AllMiniLmL12V2 => std::borrow::Cow::Borrowed(text),
             Self::E5SmallV2 => std::borrow::Cow::Owned(format!("passage: {text}")),
-            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 => std::borrow::Cow::Borrowed(text),
+            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 | Self::ArcticEmbedMV15 => {
+                std::borrow::Cow::Borrowed(text)
+            }
         }
     }
 
@@ -135,6 +185,8 @@ impl EmbeddingModel {
             "e5-small-v2" => Some(Self::E5SmallV2),
             "bge-small-en-v1.5" => Some(Self::BgeSmallEnV15),
             "bge-base-en-v1.5" => Some(Self::BgeBaseEnV15),
+            "all-MiniLM-L12-v2" | "all-minilm-l12-v2" => Some(Self::AllMiniLmL12V2),
+            "snowflake-arctic-embed-m-v1.5" => Some(Self::ArcticEmbedMV15),
             _ => None,
         }
     }
@@ -304,31 +356,37 @@ impl Embedder {
             )
             .map_err(|e| SandError::Embedding(format!("Model forward failed: {}", e)))?;
 
-        // Mean pooling with attention mask
-        let attention_mask_f32 = attention_mask_tensor
-            .to_dtype(DType::F32)
-            .map_err(|e| SandError::Embedding(format!("Mask conversion failed: {}", e)))?
-            .unsqueeze(2)
-            .map_err(|e| SandError::Embedding(format!("Unsqueeze failed: {}", e)))?;
+        let pooled = match self.embedding_model.pooling() {
+            Pooling::Mean => {
+                let attention_mask_f32 = attention_mask_tensor
+                    .to_dtype(DType::F32)
+                    .map_err(|e| SandError::Embedding(format!("Mask conversion failed: {}", e)))?
+                    .unsqueeze(2)
+                    .map_err(|e| SandError::Embedding(format!("Unsqueeze failed: {}", e)))?;
 
-        let masked_embeddings = embeddings
-            .broadcast_mul(&attention_mask_f32)
-            .map_err(|e| SandError::Embedding(format!("Broadcast mul failed: {}", e)))?;
+                let masked_embeddings = embeddings
+                    .broadcast_mul(&attention_mask_f32)
+                    .map_err(|e| SandError::Embedding(format!("Broadcast mul failed: {}", e)))?;
 
-        let sum_embeddings = masked_embeddings
-            .sum(1)
-            .map_err(|e| SandError::Embedding(format!("Sum failed: {}", e)))?;
+                let sum_embeddings = masked_embeddings
+                    .sum(1)
+                    .map_err(|e| SandError::Embedding(format!("Sum failed: {}", e)))?;
 
-        let sum_mask = attention_mask_f32
-            .sum(1)
-            .map_err(|e| SandError::Embedding(format!("Mask sum failed: {}", e)))?;
+                let sum_mask = attention_mask_f32
+                    .sum(1)
+                    .map_err(|e| SandError::Embedding(format!("Mask sum failed: {}", e)))?;
 
-        let mean_embeddings = sum_embeddings
-            .broadcast_div(&sum_mask)
-            .map_err(|e| SandError::Embedding(format!("Division failed: {}", e)))?;
+                sum_embeddings
+                    .broadcast_div(&sum_mask)
+                    .map_err(|e| SandError::Embedding(format!("Division failed: {}", e)))?
+            }
+            Pooling::Cls => embeddings
+                .i((.., 0))
+                .map_err(|e| SandError::Embedding(format!("CLS pooling failed: {}", e)))?,
+        };
 
         // L2 normalize embeddings
-        let final_embeddings = normalize_l2(&mean_embeddings)?;
+        let final_embeddings = normalize_l2(&pooled)?;
 
         // Convert to Vec<Vec<f32>>
         let embeddings_vec: Vec<Vec<f32>> = final_embeddings
@@ -599,6 +657,18 @@ mod tests {
             "BGE-base document embedding should equal raw embedding (no prefix)"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    #[ignore] // Requires model download
+    fn test_cls_pooling_matches_sentence_transformers() -> Result<()> {
+        let embedder = Embedder::with_embedding_model(EmbeddingModel::ArcticEmbedMV15)?;
+        let emb = embedder.embed_document("We use Postgres for the main database")?;
+        // first values of SentenceTransformer("Snowflake/snowflake-arctic-embed-m-v1.5").encode(...)
+        for (got, want) in emb.iter().zip([0.0313, 0.0308, 0.0877, 0.0234]) {
+            assert!((got - want).abs() < 1e-3, "{got} != {want}");
+        }
         Ok(())
     }
 
