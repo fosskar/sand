@@ -38,14 +38,21 @@ cargo install --path .
 
 The crates.io package `sediment-mcp` and the Homebrew formula `rendro/tap/sediment` install the original Sediment, not this repository.
 
-## Coming from Sediment
+## Differences from Sediment
 
 sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup.
 
+### Changes
+
+- The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, the MCP server name, and the `mcp__sand__` instructions that `sand init` writes.
+- sand writes no `.sediment/` or `.sand/` directories and no per-repository files. In a git repository the project ID is computed from the root commit on every start. IDs of other directories live in `access.db`. Existing `.sediment/config` files are still honoured.
+
+### Compatibility
+
 These stay permanently:
 
-- sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged. It never moves or copies the database.
-- A `.sediment/` directory still marks a project root. When `.sand/config` is missing, sand copies the project's `.sediment/config`, from the project directory or from the central state next to the database, so the project ID stays the same. The `.sediment/config` file is left in place.
+- sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged apart from the added `projects` table. It never moves or copies the database.
+- Project IDs that Sediment stored in `.sediment/config`, in the project directory or in the central state next to the database, are imported once, so the project ID stays the same. A `.sediment/` directory still marks a project root. The files are only read, never changed or deleted.
 
 These old names are accepted until 1.0 and then removed. While sand uses one of the first three, it prints one line per process on stderr that names the replacement.
 
@@ -53,6 +60,8 @@ These old names are accepted until 1.0 and then removed. While sand uses one of 
 - Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_PROJECT_ID`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
 - Without a database path, sand uses `~/.sand/data`. If `~/.sand` does not exist and `~/.sediment/data` does, it uses `~/.sediment/data`.
 - `sand init` recognises the instructions Sediment wrote (`mcp__sediment__`) and does not add a second block.
+
+One direction is not covered: a directory outside git that was first used with sand has no `.sediment/config`, so going back to Sediment gives it a new project ID there.
 
 ## Setup
 

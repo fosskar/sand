@@ -2,7 +2,7 @@
 
 Guidance for coding agents working in this repository.
 
-This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and project markers keep working (README.md, "Coming from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
+This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and `.sediment/config` project ids keep working (README.md, "Differences from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
 
 Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice except `init`): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), the `~/.sediment/data` default in `default_db_path`, and `mcp__sediment__` in `has_sand_instructions`. The database format and the `.sediment/config` import stay.
 
@@ -109,7 +109,7 @@ Priority: `--db` flag > `SAND_DB` > `SEDIMENT_DB` > default `~/.sand/data`, or `
 
 - **Two-database hybrid**: LanceDB for vectors, SQLite for graph relationships + mutable counters
 - **Single central database** at `~/.sand/data/` stores all projects; graph + access at `~/.sand/access.db`
-- **Project scoping**: in a git repository the project ID is the root commit hash, so clones and worktrees share it. Its config is cached under `<parent of the database path>/projects/<sha256 of the repository path>/.sand/config`. A directory outside git gets a UUID in `<root>/.sand/config`. A missing `.sand/config` is copied from Sediment's `.sediment/config` in the same places; `.sediment/` also marks a project root
+- **Project scoping** (`resolve_project` in `src/lib.rs`): in a git repository the project ID is the root commit hash, derived on every start, so clones and worktrees share it and nothing is written. Any other directory gets a UUID in the `projects` table of `access.db`, keyed by the canonical project root; the nearest ancestor with a row is the root, and a `.git` whose ID cannot be derived (shallow clone, no commits) also makes a root. Sediment's `.sediment/config` files, in the directory or under `<parent of the database path>/projects/<sha256 of the path>/.sediment/config`, are imported into the table and never rewritten; a `.sediment/` directory still makes a root. sand creates no marker directories. When a directory with a stored UUID becomes a git repository, the MCP server moves its items to the git ID and then sets the row to the git ID
 - **Similarity boosting**: Same-project items unchanged, different projects get 0.875x penalty (12.5% spread)
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring. BM25 boost is additive (max 0.12, power-law gamma 2.0). FTS index rebuilt on each store
 - **Conflict detection**: Items with >=0.85 similarity flagged on store and enqueued for consolidation
@@ -190,12 +190,19 @@ CREATE TABLE consolidation_queue (
     created_at INTEGER NOT NULL,
     UNIQUE(item_id_a, item_id_b)
 );
+
+-- Project ids of directories outside git (git repositories derive theirs)
+CREATE TABLE projects (
+    path TEXT PRIMARY KEY,  -- canonical project root
+    project_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 ```
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 33 tests are ignored in total and none of them run in the Nix build
-- Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project configs are written next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 32 tests are ignored in total and none of them run in the Nix build
+- Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
 - `tests/cli_global_scope.rs` and `tests/cli_compat.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data
 - LanceDB operations are async; tests use `#[tokio::test]` or `tokio::runtime::Runtime`
