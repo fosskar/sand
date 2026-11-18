@@ -1,10 +1,13 @@
-[![Crates.io](https://img.shields.io/crates/v/sediment-mcp.svg)](https://crates.io/crates/sediment-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/rendro/sediment/actions/workflows/ci.yml/badge.svg)](https://github.com/rendro/sediment/actions/workflows/ci.yml)
+[![CI](https://github.com/fosskar/sand/actions/workflows/ci.yml/badge.svg)](https://github.com/fosskar/sand/actions/workflows/ci.yml)
 
-# Sediment
+# sand
 
 Semantic memory for AI agents. Local-first, MCP-native.
+
+sand is based on [Sediment](https://github.com/rendro/sediment) by [rendro](https://github.com/rendro), who designed and wrote the program described below. This repository starts from Sediment 0.5.1 and is maintained independently; it is not affiliated with or endorsed by the original author. Changes made here are listed in the commit history after the `Bump version to 0.5.1` commit.
+
+The program, its command, its crate and its settings are still named `sediment`. The text below is Sediment's documentation, and the benchmark numbers in it were measured by the original author.
 
 Combines vector search, a relationship graph, and access tracking into a unified memory intelligence layer — all running locally as a single binary.
 

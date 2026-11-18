@@ -2,9 +2,9 @@
 name = "sediment-mcp"
 version = "0.5.1"
 edition = "2024"
-repository = "https://github.com/rendro/sediment"
-homepage = "https://github.com/rendro/sediment"
-authors = ["rendro"]
+repository = "https://github.com/fosskar/sand"
+homepage = "https://github.com/fosskar/sand"
+authors = ["rendro", "fosskar"]
 description = "Semantic memory for AI agents - local-first, MCP-native"
 license = "MIT"
 readme = "README.md"

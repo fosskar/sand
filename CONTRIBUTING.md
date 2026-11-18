@@ -5,8 +5,8 @@ Thanks for your interest in contributing to Sediment!
 ## Getting Started
 
 ```bash
-git clone https://github.com/rendro/sediment.git
-cd sediment
+git clone https://github.com/fosskar/sand.git
+cd sand
 cargo build
 ```
 
@@ -50,4 +50,4 @@ See [CLAUDE.md](./CLAUDE.md) for a detailed architecture overview including:
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/rendro/sediment/issues) with the provided templates.
+Use [GitHub Issues](https://github.com/fosskar/sand/issues) with the provided templates.
