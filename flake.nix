@@ -1,10 +1,20 @@
 {
   description = "Semantic memory for AI agents - local-first, MCP-native";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      treefmt-nix,
+    }:
     let
       inherit (nixpkgs) lib;
       systems = [
@@ -12,6 +22,7 @@
         "aarch64-linux"
       ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      treefmtFor = forAllSystems (pkgs: treefmt-nix.lib.evalModule pkgs ./treefmt.nix);
     in
     {
       packages = forAllSystems (pkgs: {
@@ -72,14 +83,40 @@
             pkgs.oniguruma
             pkgs.sqlite
             pkgs.zstd
+            treefmtFor.${pkgs.stdenv.hostPlatform.system}.config.build.wrapper
           ];
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
         };
       });
 
-      checks = forAllSystems (pkgs: {
-        package = self.packages.${pkgs.stdenv.hostPlatform.system}.sediment;
-      });
+      formatter = forAllSystems (
+        pkgs: treefmtFor.${pkgs.stdenv.hostPlatform.system}.config.build.wrapper
+      );
+
+      checks = forAllSystems (
+        pkgs:
+        let
+          inherit (pkgs.stdenv.hostPlatform) system;
+        in
+        {
+          package = self.packages.${system}.sediment;
+
+          formatting = treefmtFor.${system}.config.build.check self;
+
+          clippy = self.packages.${system}.sediment.overrideAttrs (old: {
+            pname = "sediment-clippy";
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
+            buildPhase = ''
+              runHook preBuild
+              cargo clippy --all-targets --offline -- -D warnings
+              runHook postBuild
+            '';
+            doCheck = false;
+            installPhase = "touch $out";
+            dontFixup = true;
+          });
+        }
+      );
     };
 }
