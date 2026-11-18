@@ -1,0 +1,61 @@
+name: Release
+
+# nixbot's release effect pushes the tag v<version> after main built green
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v0.6.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # the oldest image GitHub offers: the binary needs at least the glibc of the builder
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Check that the tag matches Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Install protoc
+        run: |
+          gh release download v36.2 --repo protocolbuffers/protobuf \
+            --pattern protoc-36.2-linux-x86_64.zip --dir "$RUNNER_TEMP"
+          echo "121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278  $RUNNER_TEMP/protoc-36.2-linux-x86_64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/protoc-36.2-linux-x86_64.zip" -d "$RUNNER_TEMP/protoc"
+          echo "PROTOC=$RUNNER_TEMP/protoc/bin/protoc" >>"$GITHUB_ENV"
+          echo "PROTOC_INCLUDE=$RUNNER_TEMP/protoc/include" >>"$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cargo build --release --locked --bin sand
+          target/release/sand --version
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/release/sand LICENSE dist/
+          tar -C dist -czf sand-x86_64-linux.tar.gz sand LICENSE
+          sha256sum sand-x86_64-linux.tar.gz >SHA256SUMS
+
+      - name: Publish the release
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            sand-x86_64-linux.tar.gz SHA256SUMS
