@@ -16,6 +16,3 @@ Thumbs.db
 
 # Sediment local data
 .sediment/
-
-# Cloned repos (for local testing)
-homebrew-tap/
