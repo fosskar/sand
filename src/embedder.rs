@@ -157,11 +157,10 @@ pub struct Embedder {
 impl Embedder {
     /// Create a new embedder, downloading the model if necessary.
     ///
-    /// Reads `SAND_EMBEDDING_MODEL` env var to select the model.
+    /// Reads the `SAND_EMBEDDING_MODEL` setting to select the model.
     /// Falls back to AllMiniLmL6V2 if unset or unrecognized.
     pub fn new() -> Result<Self> {
-        let embedding_model = std::env::var("SAND_EMBEDDING_MODEL")
-            .ok()
+        let embedding_model = crate::setting("EMBEDDING_MODEL")
             .and_then(|s| EmbeddingModel::from_env_str(&s))
             .unwrap_or_default();
         Self::with_embedding_model(embedding_model)

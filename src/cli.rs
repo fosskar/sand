@@ -21,10 +21,11 @@ Environment variables:
                          SAND_DB=/tmp/task-xyz sand store \"...\"
   SAND_EMBEDDING_MODEL Override embedding model (default: all-MiniLM-L6-v2).
                        Options: all-MiniLM-L6-v2, bge-small-en-v1.5
+  Each SAND_* variable falls back to SEDIMENT_* when it is unset.
 ")]
 struct Cli {
-    /// Database path [default: ~/.sand/data]
-    #[arg(long, global = true, env = "SAND_DB")]
+    /// Database path [default: SAND_DB or ~/.sand/data]
+    #[arg(long, global = true)]
     db: Option<PathBuf>,
 
     /// Enable verbose output
@@ -481,9 +482,9 @@ fn cli_context(db_override: Option<PathBuf>) -> CliContext {
 
     // a caller that resolved the project earlier can act on it after the
     // project directory is gone; an empty value forces global context
-    let project_id = match std::env::var("SAND_PROJECT_ID") {
-        Ok(id) => Some(id).filter(|id| !id.is_empty()),
-        Err(_) => {
+    let project_id = match crate::setting("PROJECT_ID") {
+        Some(id) => Some(id).filter(|id| !id.is_empty()),
+        None => {
             let cwd = std::env::current_dir().ok();
             let project_root = cwd
                 .as_deref()

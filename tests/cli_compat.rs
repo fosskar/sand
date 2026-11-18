@@ -34,3 +34,39 @@ fn test_sediment_executable_matches_sand() {
         );
     }
 }
+
+#[test]
+fn test_sediment_settings_are_fallbacks() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path();
+    let old_db = home.join("old").to_str().unwrap().to_string();
+    let new_db = home.join("new").to_str().unwrap().to_string();
+    let flag_db = home.join("flag").to_str().unwrap().to_string();
+    let stats_db = |env: &[(&str, &str)], args: &[&str]| {
+        let out = run(SAND, home, env, &[&["stats"], args].concat());
+        out.lines().next().unwrap().to_string()
+    };
+
+    assert_eq!(
+        stats_db(&[("SEDIMENT_DB", &old_db)], &[]),
+        format!("Database: {old_db}")
+    );
+    let both = [("SEDIMENT_DB", old_db.as_str()), ("SAND_DB", &new_db)];
+    assert_eq!(stats_db(&both, &[]), format!("Database: {new_db}"));
+    assert_eq!(
+        stats_db(&both, &["--db", &flag_db]),
+        format!("Database: {flag_db}")
+    );
+
+    let project_id = |env: &[(&str, &str)]| {
+        let out = run(SAND, home, env, &["--json", "project"]);
+        serde_json::from_str::<serde_json::Value>(&out).unwrap()["project_id"].clone()
+    };
+    assert_eq!(project_id(&[("SEDIMENT_PROJECT_ID", "old")]), "old");
+    assert_eq!(
+        project_id(&[("SEDIMENT_PROJECT_ID", "old"), ("SAND_PROJECT_ID", "new")]),
+        "new"
+    );
+    // an empty SAND_PROJECT_ID is set: it selects global context
+    assert!(project_id(&[("SEDIMENT_PROJECT_ID", "old"), ("SAND_PROJECT_ID", "")]).is_null());
+}

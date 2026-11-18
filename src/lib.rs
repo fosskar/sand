@@ -112,12 +112,21 @@ impl std::fmt::Display for ListScope {
     }
 }
 
+/// Read the setting `SAND_<name>` from the environment.
+///
+/// Falls back to `SEDIMENT_<name>`, the name sand had before 0.6.0, when `SAND_<name>` is unset.
+pub fn setting(name: &str) -> Option<String> {
+    std::env::var(format!("SAND_{name}"))
+        .or_else(|_| std::env::var(format!("SEDIMENT_{name}")))
+        .ok()
+}
+
 /// Get the central database path.
 ///
-/// Returns `~/.sand/data` or the path specified in `SAND_DB` environment variable.
+/// Returns `~/.sand/data` or the path specified in the `SAND_DB` setting.
 /// Note: LanceDB uses a directory, not a single file.
 pub fn central_db_path() -> PathBuf {
-    if let Ok(path) = std::env::var("SAND_DB") {
+    if let Some(path) = setting("DB") {
         return PathBuf::from(path);
     }
 

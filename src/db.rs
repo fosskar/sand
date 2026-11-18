@@ -197,12 +197,10 @@ impl Database {
         // for parameter sweeps. Production builds always use the compiled defaults.
         #[cfg(feature = "bench")]
         let (fts_boost_max, fts_gamma) = {
-            let boost = std::env::var("SAND_FTS_BOOST_MAX")
-                .ok()
+            let boost = crate::setting("FTS_BOOST_MAX")
                 .and_then(|v| v.parse::<f32>().ok())
                 .unwrap_or(FTS_BOOST_MAX);
-            let gamma = std::env::var("SAND_FTS_GAMMA")
-                .ok()
+            let gamma = crate::setting("FTS_GAMMA")
                 .and_then(|v| v.parse::<f32>().ok())
                 .unwrap_or(FTS_GAMMA);
             (boost, gamma)
