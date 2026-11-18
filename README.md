@@ -60,8 +60,6 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 ### Added
 
 - `consolidate` command: drains the consolidation queue, which merges near-duplicates and links related notes. Sediment drained it only inside the MCP server, so notes stored through the CLI were never merged.
-- `project` command: prints the project ID of the current directory.
-- `SAND_PROJECT_ID` setting: sets the project ID for CLI commands; an empty value means global context.
 - `hook recall` command for `UserPromptSubmit` hooks; see [Harness integration](#harness-integration).
 - Guidance in the MCP tool descriptions and server instructions on when to recall, when to store, and which scope to use.
 - Nix flake with a package and a dev shell. CI runs the flake checks (build and tests, formatting, clippy) on nixbot.
@@ -75,6 +73,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 - The Homebrew formula, the macOS binaries and the crates.io package. A GitHub Actions workflow builds the Linux x86_64 release binary again, and `install.sh` installs it; other systems install with `cargo install` or the Nix flake.
 - The `init` command, which wrote usage instructions into `CLAUDE.md`. The MCP tool descriptions and the server instructions carry that guidance. Sediment and sand 0.6.0 had the command.
+- The `project` command, which printed the project ID of the current directory, and the `SAND_PROJECT_ID` setting, which replaced that ID for CLI commands. sand 0.6.0 had both.
 
 ### Compatibility
 
@@ -86,7 +85,7 @@ These stay permanently:
 These old names are accepted until 1.0 and then removed. While sand uses one of them, it prints one line per process on stderr that names the replacement.
 
 - A `sediment` executable is installed next to `sand` and behaves the same. MCP client configurations that start `sediment` keep working.
-- Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_PROJECT_ID`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
+- Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
 - Without a database path, sand uses `~/.sand/data`. If `~/.sand` does not exist and `~/.sediment/data` does, it uses `~/.sediment/data`.
 
 One direction is not covered: a directory outside git that was first used with sand has no `.sediment/config`, so going back to Sediment gives it a new project ID there.

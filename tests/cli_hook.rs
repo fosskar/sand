@@ -46,8 +46,8 @@ fn test_hook_recall_prints_once_per_session() {
     let note = "the user prefers fish as the interactive shell";
     let stored = Command::new(env!("CARGO_BIN_EXE_sand"))
         .env("SAND_DB", dir.join("data"))
-        .env("SAND_PROJECT_ID", "")
-        .args(["store", note])
+        .current_dir(dir)
+        .args(["store", "--scope", "global", note])
         .output()
         .unwrap();
     assert!(stored.status.success());

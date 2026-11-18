@@ -107,9 +107,6 @@ enum Commands {
         max_batches: usize,
     },
 
-    /// Print the project ID derived from the current directory
-    Project,
-
     /// Commands that agent harnesses run as hooks
     #[command(subcommand)]
     Hook(Hook),
@@ -177,7 +174,6 @@ pub fn run() -> Result<()> {
         Some(Commands::Consolidate { max_batches }) => {
             run_consolidate(cli.db, max_batches, cli.json)
         }
-        Some(Commands::Project) => run_project(cli.db, cli.json),
         Some(Commands::Hook(Hook::Recall {
             min_similarity,
             limit,
@@ -315,31 +311,15 @@ fn cli_context(db_override: Option<PathBuf>) -> CliContext {
     let sand_dir = db_path.parent().unwrap_or(&db_path);
     let access_db_path = sand_dir.join("access.db");
 
-    // a caller that resolved the project earlier can act on it after the
-    // project directory is gone; an empty value forces global context
-    let project_id = match crate::setting("PROJECT_ID") {
-        Some(id) => Some(id).filter(|id| !id.is_empty()),
-        None => std::env::current_dir()
-            .ok()
-            .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok())
-            .map(|project| project.id),
-    };
+    let project_id = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok())
+        .map(|project| project.id);
 
     CliContext {
         db_path,
         project_id,
     }
-}
-
-/// Print the project ID that project-scoped commands would use.
-fn run_project(db_override: Option<PathBuf>, output_json: bool) -> Result<()> {
-    let ctx = cli_context(db_override);
-    if output_json {
-        println!("{}", json!({ "project_id": ctx.project_id }));
-    } else if let Some(id) = ctx.project_id {
-        println!("{id}");
-    }
-    Ok(())
 }
 
 /// List stored items

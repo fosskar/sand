@@ -38,7 +38,6 @@ cargo run --release -- recall "search query"    # Semantic search
 cargo run --release -- forget <id>              # Delete an item
 cargo run --release -- compact                  # Compact LanceDB storage
 cargo run --release -- consolidate              # Drain the consolidation queue (merge duplicates, link related)
-cargo run --release -- project                  # Print the project ID of the current directory
 echo '{"prompt":"...","session_id":"s1"}' | cargo run --release -- hook recall  # UserPromptSubmit hook
 cargo run --release -- --json list              # JSON output (any command)
 
@@ -77,7 +76,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 ### Core Components
 
 - **`src/main.rs`**, **`src/bin/sediment.rs`** - the `sand` and `sediment` executables; both call `sand::cli::run`
-- **`src/cli.rs`** - CLI with subcommands (stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
+- **`src/cli.rs`** - CLI with subcommands (stats, list, store, recall, forget, compact, consolidate, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
 - **`src/backend/`** - The `Backend` trait: the store operations the CLI and the MCP server call. `LocalBackend` implements it on the local database, runs the recall pipeline, and with `with_background_work` (MCP server) the background tasks
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
@@ -113,7 +112,6 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 |----------|---------|-------------|
 | `SAND_DB` | `~/.sand/data` | Override database path. Also available as `--db` CLI flag. Useful for ephemeral/isolated storage: `SAND_DB=/tmp/task sand store "..."` |
 | `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model. Options: `all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5` (768-dim) |
-| `SAND_PROJECT_ID` | derived from the current directory | CLI only. Use this project ID instead of detecting one; an empty value means no project (global context) |
 | `SAND_FTS_BOOST_MAX`, `SAND_FTS_GAMMA` | `0.12`, `2.0` | Override the BM25 boost parameters. Read only in builds with the `bench` feature |
 
 Each `SAND_<name>` variable falls back to `SEDIMENT_<name>` when it is unset (`sand::setting`).

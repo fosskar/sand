@@ -3,14 +3,11 @@ use std::process::Command;
 
 use serde_json::Value;
 
-const PROJECT_A: &str = "00000000000000000000000000000000000000aa";
-const PROJECT_B: &str = "00000000000000000000000000000000000000bb";
-
-fn sand(dir: &Path, project_id: &str, args: &[&str]) -> Value {
+/// Run `sand --json` with `project` as the working directory; the store is next to it.
+fn sand(project: &Path, args: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_sand"))
-        .current_dir(dir)
-        .env("SAND_DB", dir.join("data"))
-        .env("SAND_PROJECT_ID", project_id)
+        .current_dir(project)
+        .env("SAND_DB", project.parent().unwrap().join("data"))
         .arg("--json")
         .args(args)
         .output()
@@ -24,8 +21,8 @@ fn sand(dir: &Path, project_id: &str, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-fn list(dir: &Path, project_id: &str, scope: &str) -> Vec<(String, String)> {
-    sand(dir, project_id, &["list", "--scope", scope])["items"]
+fn list(project: &Path, scope: &str) -> Vec<(String, String)> {
+    sand(project, &["list", "--scope", scope])["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -42,11 +39,12 @@ fn list(dir: &Path, project_id: &str, scope: &str) -> Vec<(String, String)> {
 #[ignore] // requires model download
 fn test_cli_store_global_scope_is_global() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let dir = tmp.path();
+    let (project_a, project_b) = (tmp.path().join("a"), tmp.path().join("b"));
+    std::fs::create_dir(&project_a).unwrap();
+    std::fs::create_dir(&project_b).unwrap();
 
     let old_id = sand(
-        dir,
-        PROJECT_A,
+        &project_a,
         &[
             "store",
             "--scope",
@@ -58,14 +56,13 @@ fn test_cli_store_global_scope_is_global() {
         .unwrap()
         .to_string();
     assert_eq!(
-        list(dir, PROJECT_A, "global"),
+        list(&project_a, "global"),
         vec![(old_id.clone(), "global".to_string())]
     );
-    assert!(list(dir, PROJECT_A, "project").is_empty());
+    assert!(list(&project_a, "project").is_empty());
 
     let new_id = sand(
-        dir,
-        PROJECT_A,
+        &project_a,
         &[
             "store",
             "--scope",
@@ -79,16 +76,15 @@ fn test_cli_store_global_scope_is_global() {
         .unwrap()
         .to_string();
     assert_eq!(
-        list(dir, PROJECT_A, "global"),
+        list(&project_a, "global"),
         vec![(new_id.clone(), "global".to_string())]
     );
-    assert!(list(dir, PROJECT_A, "project").is_empty());
-    assert_eq!(list(dir, PROJECT_A, "all").len(), 1);
+    assert!(list(&project_a, "project").is_empty());
+    assert_eq!(list(&project_a, "all").len(), 1);
 
     // another project sees the item as global: no cross-project flag, may forget it
     let recall = sand(
-        dir,
-        PROJECT_B,
+        &project_b,
         &["recall", "the user prefers tabs over spaces, width 4"],
     );
     let hit = recall["results"]
@@ -99,6 +95,6 @@ fn test_cli_store_global_scope_is_global() {
         .expect("recall should return the global item");
     assert!(hit.get("cross_project").is_none(), "got: {}", hit);
 
-    sand(dir, PROJECT_B, &["forget", &new_id]);
-    assert!(list(dir, PROJECT_A, "all").is_empty());
+    sand(&project_b, &["forget", &new_id]);
+    assert!(list(&project_a, "all").is_empty());
 }
