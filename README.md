@@ -40,12 +40,29 @@ The crates.io package `sediment-mcp` and the Homebrew formula `rendro/tap/sedime
 
 ## Differences from Sediment
 
-sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup.
+sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This was checked on a copy of a real store: Sediment 0.5.1 and sand 0.6.0 read the same store and gave identical lists, recall results and project IDs.
 
 ### Changes
 
 - The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, the MCP server name, and the `mcp__sand__` instructions that `sand init` writes.
 - sand writes no `.sediment/` or `.sand/` directories and no per-repository files. In a git repository the project ID is computed from the root commit on every start. IDs of other directories live in `access.db`. Existing `.sediment/config` files are still honoured.
+
+### Added
+
+- `consolidate` command: drains the consolidation queue, which merges near-duplicates and links related notes. Sediment drained it only inside the MCP server, so notes stored through the CLI were never merged.
+- `project` command: prints the project ID of the current directory.
+- `SAND_PROJECT_ID` setting: sets the project ID for CLI commands; an empty value means global context.
+- Guidance in the MCP tool descriptions and server instructions on when to recall, when to store, and which scope to use.
+- Nix flake with a package and a dev shell. CI runs the flake checks (build and tests, formatting, clippy) on nixbot.
+
+### Fixed
+
+- A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
+- The build failed clippy on the current Rust toolchain.
+
+### Removed
+
+- The Homebrew formula, the shell installer and the GitHub release workflow. This repository currently publishes no prebuilt binaries and no crates.io package; install with `cargo install` or the Nix flake. A Linux release with binaries and an installer is planned.
 
 ### Compatibility
 
