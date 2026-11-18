@@ -32,19 +32,14 @@ Combines vector search, a relationship graph, and access tracking into a unified
 ## Install
 
 ```bash
-# Via crates.io
-cargo install sediment-mcp
+# From this repository
+cargo install --git https://github.com/fosskar/sand
 
-# Via Homebrew
-brew tap rendro/tap
-brew install sediment
-
-# Via shell installer
-curl -fsSL https://raw.githubusercontent.com/rendro/sediment/main/install.sh | sh
-
-# From source
+# From a checkout
 cargo install --path .
 ```
+
+The crates.io package `sediment-mcp` and the Homebrew formula `rendro/tap/sediment` install the original Sediment, not this repository.
 
 ## Setup
 
