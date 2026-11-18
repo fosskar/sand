@@ -28,75 +28,21 @@
         "aarch64-linux"
       ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      treefmtFor = forAllSystems (pkgs: treefmt-nix.lib.evalModule pkgs ./treefmt.nix);
+      treefmtFor = forAllSystems (pkgs: treefmt-nix.lib.evalModule pkgs ./nix/treefmt.nix);
     in
     {
       packages = forAllSystems (pkgs: {
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.sediment;
-        # the check phase runs the tests that work offline; the ones that need the embedding model are #[ignore]
-        sediment = pkgs.rustPlatform.buildRustPackage {
-          pname = "sediment";
-          version = (lib.importTOML ./Cargo.toml).package.version;
-
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./src
-              ./benches
-              ./tests
-            ];
-          };
-
-          cargoLock.lockFile = ./Cargo.lock;
-
-          # cargoSetupHook makes zstd-sys, onig_sys and libsqlite3-sys link the system libraries
-          nativeBuildInputs = [
-            pkgs.protobuf
-            pkgs.pkg-config
-          ];
-          buildInputs = [
-            pkgs.oniguruma
-            pkgs.sqlite
-            pkgs.zstd
-          ];
-
-          env = {
-            PROTOC = "${pkgs.protobuf}/bin/protoc";
-            PROTOC_INCLUDE = "${pkgs.protobuf}/include";
-          };
-
-          meta = {
-            description = "Semantic memory for AI agents - local-first, MCP-native";
-            homepage = "https://github.com/fosskar/sand";
-            license = lib.licenses.mit;
-            mainProgram = "sediment";
-          };
-        };
+        sediment = pkgs.callPackage ./nix/package.nix { };
       });
 
       devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          packages = [
-            pkgs.cargo
-            pkgs.rustc
-            pkgs.clippy
-            pkgs.rustfmt
-            pkgs.rust-analyzer
-            pkgs.protobuf
-            pkgs.pkg-config
-            pkgs.oniguruma
-            pkgs.sqlite
-            pkgs.zstd
-            treefmtFor.${pkgs.stdenv.hostPlatform.system}.config.build.wrapper
-          ];
-          PROTOC = "${pkgs.protobuf}/bin/protoc";
-          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+        default = pkgs.callPackage ./nix/devshell.nix {
+          treefmt = treefmtFor.${pkgs.stdenv.hostPlatform.system}.config.build.wrapper;
         };
       });
 
-      herculesCI = import ./effects.nix {
+      herculesCI = import ./nix/effects.nix {
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
         inherit nixbot;
       };
