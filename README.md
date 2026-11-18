@@ -54,7 +54,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 ### Changes
 
-- The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, the MCP server name, and the `mcp__sand__` instructions that `sand init` writes.
+- The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, and the MCP server name.
 - sand writes no `.sediment/` or `.sand/` directories and no per-repository files. In a git repository the project ID is computed from the root commit on every start. IDs of other directories live in `access.db`. Existing `.sediment/config` files are still honoured.
 
 ### Added
@@ -74,6 +74,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 ### Removed
 
 - The Homebrew formula, the macOS binaries and the crates.io package. A GitHub Actions workflow builds the Linux x86_64 release binary again, and `install.sh` installs it; other systems install with `cargo install` or the Nix flake.
+- The `init` command, which wrote usage instructions into `CLAUDE.md`. The MCP tool descriptions and the server instructions carry that guidance. Sediment and sand 0.6.0 had the command.
 
 ### Compatibility
 
@@ -82,12 +83,11 @@ These stay permanently:
 - sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged apart from the added `projects` table. It never moves or copies the database.
 - Project IDs that Sediment stored in `.sediment/config`, in the project directory or in the central state next to the database, are imported once, so the project ID stays the same. A `.sediment/` directory still marks a project root. The files are only read, never changed or deleted.
 
-These old names are accepted until 1.0 and then removed. While sand uses one of the first three, it prints one line per process on stderr that names the replacement.
+These old names are accepted until 1.0 and then removed. While sand uses one of them, it prints one line per process on stderr that names the replacement.
 
 - A `sediment` executable is installed next to `sand` and behaves the same. MCP client configurations that start `sediment` keep working.
 - Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_PROJECT_ID`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
 - Without a database path, sand uses `~/.sand/data`. If `~/.sand` does not exist and `~/.sediment/data` does, it uses `~/.sediment/data`.
-- `sand init` recognises the instructions Sediment wrote (`mcp__sediment__`) and does not add a second block.
 
 One direction is not covered: a directory outside git that was first used with sand has no `.sediment/config`, so going back to Sediment gives it a new project ID there.
 
@@ -111,7 +111,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Claude Code
 
-Run `sand init` in your project, or add manually to `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -223,7 +223,6 @@ Harnesses without command hooks can run the same command from their own extensio
 
 ```bash
 sand                              # Start MCP server
-sand init                         # Set up Claude Code integration
 sand stats                        # Show database statistics
 sand list                         # List stored items
 sand list --scope global          # List global items

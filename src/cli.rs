@@ -45,17 +45,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Set up Claude Code integration - writes CLAUDE.md instructions
-    Init {
-        /// Write instructions to local project CLAUDE.md (non-interactive)
-        #[arg(long, conflicts_with = "global")]
-        local: bool,
-
-        /// Write instructions to global ~/.claude/CLAUDE.md (non-interactive)
-        #[arg(long, conflicts_with = "local")]
-        global: bool,
-    },
-
     /// Show database statistics (item count, chunk count)
     Stats,
 
@@ -175,7 +164,6 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         None => run_mcp_server(cli.db),
-        Some(Commands::Init { local, global }) => run_init(cli.db, local, global),
         Some(Commands::Stats) => run_stats(cli.db),
         Some(Commands::List { limit, scope }) => run_list(cli.db, limit, &scope, cli.json),
         Some(Commands::Store {
@@ -281,157 +269,6 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
 
     // Run MCP server
     crate::mcp::run(backend.with_background_work(embedder))?;
-
-    Ok(())
-}
-
-/// Check if a file contains sand instructions, or the ones Sediment wrote
-fn has_sand_instructions(path: &PathBuf) -> bool {
-    if path.exists()
-        && let Ok(content) = std::fs::read_to_string(path)
-    {
-        return content.contains("mcp__sand__") || content.contains("mcp__sediment__");
-    }
-    false
-}
-
-/// Initialize Claude Code integration
-fn run_init(db_override: Option<PathBuf>, use_local: bool, use_global: bool) -> Result<()> {
-    use dialoguer::{Confirm, Select};
-
-    // Find the project; outside git this stores its id
-    let db_path = db_override.unwrap_or_else(crate::central_db_path);
-    let access_db_path = db_path.parent().unwrap_or(&db_path).join("access.db");
-    let project = crate::resolve_project(&std::env::current_dir()?, &access_db_path)?;
-
-    println!("Initializing sand for: {}", project.root.display());
-    println!("Project ID: {}", project.id);
-
-    // Determine CLAUDE.md paths
-    let local_claude_md = project.root.join("CLAUDE.md");
-    let global_claude_md = dirs::home_dir()
-        .map(|h| h.join(".claude").join("CLAUDE.md"))
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-
-    // Check if instructions already exist in either location
-    let local_has_instructions = has_sand_instructions(&local_claude_md);
-    let global_has_instructions = has_sand_instructions(&global_claude_md);
-
-    // If both already have instructions, we're done
-    if local_has_instructions && global_has_instructions {
-        println!("sand instructions already present in both local and global CLAUDE.md");
-        println!("\nsand initialized successfully!");
-        println!("The MCP server will now auto-detect this project.");
-        return Ok(());
-    }
-
-    // Determine target based on flags or interactive prompt
-    let claude_md_path = if use_local {
-        if local_has_instructions {
-            println!("Local CLAUDE.md already contains sand instructions");
-            println!("\nsand initialized successfully!");
-            println!("The MCP server will now auto-detect this project.");
-            return Ok(());
-        }
-        Some(local_claude_md)
-    } else if use_global {
-        if global_has_instructions {
-            println!("Global CLAUDE.md already contains sand instructions");
-            println!("\nsand initialized successfully!");
-            println!("The MCP server will now auto-detect this project.");
-            return Ok(());
-        }
-        Some(global_claude_md)
-    } else {
-        // Interactive mode - build options with status indicators
-        let local_status = if local_has_instructions {
-            " [already added]"
-        } else {
-            ""
-        };
-        let global_status = if global_has_instructions {
-            " [already added]"
-        } else {
-            ""
-        };
-
-        let options = &[
-            format!("Local  ({}){}", local_claude_md.display(), local_status),
-            format!("Global ({}){}", global_claude_md.display(), global_status),
-            "Skip".to_string(),
-        ];
-
-        // Default to the first option that doesn't already have instructions
-        let default_idx = if local_has_instructions { 1 } else { 0 };
-
-        let selection = Select::new()
-            .with_prompt("Where should sand instructions be added?")
-            .items(options)
-            .default(default_idx)
-            .interact()?;
-
-        match selection {
-            0 => {
-                if local_has_instructions {
-                    println!("Local CLAUDE.md already contains sand instructions");
-                    None
-                } else {
-                    Some(local_claude_md)
-                }
-            }
-            1 => {
-                if global_has_instructions {
-                    println!("Global CLAUDE.md already contains sand instructions");
-                    None
-                } else {
-                    Some(global_claude_md)
-                }
-            }
-            _ => None,
-        }
-    };
-
-    let Some(claude_md_path) = claude_md_path else {
-        println!("\nsand initialized successfully!");
-        println!("The MCP server will now auto-detect this project.");
-        return Ok(());
-    };
-
-    let instructions = generate_claude_md_instructions();
-
-    // Ensure parent directory exists for global path
-    if let Some(parent) = claude_md_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    if claude_md_path.exists() {
-        // Read existing content
-        let existing = std::fs::read_to_string(&claude_md_path)?;
-
-        // In non-interactive mode, always append; in interactive mode, ask
-        let should_append = if use_local || use_global {
-            true
-        } else {
-            Confirm::new()
-                .with_prompt("CLAUDE.md exists. Append sand instructions?")
-                .default(true)
-                .interact()?
-        };
-
-        if should_append {
-            let new_content = format!("{}\n\n{}", existing.trim(), instructions);
-            std::fs::write(&claude_md_path, new_content)?;
-            println!("Updated: {}", claude_md_path.display());
-        } else {
-            println!("Skipped CLAUDE.md update");
-        }
-    } else {
-        std::fs::write(&claude_md_path, &instructions)?;
-        println!("Created: {}", claude_md_path.display());
-    }
-
-    println!("\nsand initialized successfully!");
-    println!("The MCP server will now auto-detect this project.");
 
     Ok(())
 }
@@ -1040,32 +877,4 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{} bytes", bytes)
     }
-}
-
-/// Generate CLAUDE.md instructions for sand
-fn generate_claude_md_instructions() -> String {
-    r#"# sand Memory System
-
-Use `mcp__sand__store`, `mcp__sand__recall`, `mcp__sand__list`, and `mcp__sand__forget` for persistent memory.
-
-## Proactive Usage
-
-- **Recall at conversation start** when context might exist (preferences, prior decisions, project conventions)
-- **Store immediately** when the user states a preference, makes a decision, or you learn something important about the codebase
-- Use `scope: "global"` for cross-project preferences; default `"project"` scope for everything else
-
-## What to Store
-
-- User preferences and working style
-- Architectural decisions and rationale
-- Project conventions (naming, patterns, tools)
-- Non-obvious learnings about the codebase
-
-## What NOT to Store
-
-- Transient task context (current debugging session, temporary workarounds)
-- Information already in CLAUDE.md or README
-- Obvious facts derivable from code
-"#
-    .to_string()
 }

@@ -47,7 +47,6 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-dialoguer = "0.11"
 
 # Access tracking
 rusqlite = { version = "0.31", features = ["bundled"] }

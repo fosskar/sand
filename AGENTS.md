@@ -14,7 +14,7 @@ Guidance for coding agents working in this repository.
 
 This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and `.sediment/config` project ids keep working (README.md, "Differences from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
 
-Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice except `init`): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), the `~/.sediment/data` default in `default_db_path`, and `mcp__sediment__` in `has_sand_instructions`. The database format and the `.sediment/config` import stay.
+Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), and the `~/.sediment/data` default in `default_db_path`. The database format and the `.sediment/config` import stay.
 
 ## Build Commands
 
@@ -29,7 +29,6 @@ cargo run --release
 cargo run --release -- --verbose
 
 # Run CLI commands
-cargo run --release -- init                     # Initialize project
 cargo run --release -- stats                    # Show database statistics
 cargo run --release -- list                     # List stored items
 cargo run --release -- list --scope global      # List global items
@@ -78,7 +77,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 ### Core Components
 
 - **`src/main.rs`**, **`src/bin/sediment.rs`** - the `sand` and `sediment` executables; both call `sand::cli::run`
-- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
+- **`src/cli.rs`** - CLI with subcommands (stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
 - **`src/backend/`** - The `Backend` trait: the store operations the CLI and the MCP server call. `LocalBackend` implements it on the local database, runs the recall pipeline, and with `with_background_work` (MCP server) the background tasks
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
