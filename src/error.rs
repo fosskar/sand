@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum SedimentError {
+pub enum SandError {
     #[error("Database error: {0}")]
     Database(String),
 
@@ -30,4 +30,4 @@ pub enum SedimentError {
     Tokenizer(String),
 }
 
-pub type Result<T> = std::result::Result<T, SedimentError>;
+pub type Result<T> = std::result::Result<T, SandError>;

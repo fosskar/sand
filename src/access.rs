@@ -8,7 +8,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, params};
 
-use crate::error::{Result, SedimentError};
+use crate::error::{Result, SandError};
 
 /// Combined access and validation data for decay scoring.
 #[derive(Debug, Clone)]
@@ -27,9 +27,8 @@ pub struct AccessTracker {
 impl AccessTracker {
     /// Open or create the access tracking database.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).map_err(|e| {
-            SedimentError::Database(format!("Failed to open access database: {}", e))
-        })?;
+        let conn = Connection::open(path)
+            .map_err(|e| SandError::Database(format!("Failed to open access database: {}", e)))?;
 
         if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
             tracing::warn!("Failed to set SQLite PRAGMAs (access): {}", e);
@@ -43,9 +42,7 @@ impl AccessTracker {
                 created_at INTEGER NOT NULL
             );",
         )
-        .map_err(|e| {
-            SedimentError::Database(format!("Failed to create access_log table: {}", e))
-        })?;
+        .map_err(|e| SandError::Database(format!("Failed to create access_log table: {}", e)))?;
 
         // Idempotent schema migration: add validation_count column
         if let Err(e) = conn.execute_batch(
@@ -72,7 +69,7 @@ impl AccessTracker {
                      last_accessed_at = ?2",
                 params![item_id, now, created_at],
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to record access: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to record access: {}", e)))?;
         Ok(())
     }
 
@@ -89,7 +86,7 @@ impl AccessTracker {
                 params![item_id, now, created_at],
             )
             .map_err(|e| {
-                SedimentError::Database(format!("Failed to record validation: {}", e))
+                SandError::Database(format!("Failed to record validation: {}", e))
             })?;
         Ok(())
     }
@@ -113,7 +110,7 @@ impl AccessTracker {
         let mut stmt = self
             .conn
             .prepare(&sql)
-            .map_err(|e| SedimentError::Database(format!("Failed to prepare query: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to prepare query: {}", e)))?;
 
         let params: Vec<&dyn rusqlite::types::ToSql> = item_ids
             .iter()
@@ -125,13 +122,13 @@ impl AccessTracker {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
             })
             .map_err(|e| {
-                SedimentError::Database(format!("Failed to query validation counts: {}", e))
+                SandError::Database(format!("Failed to query validation counts: {}", e))
             })?;
 
         let mut map = HashMap::new();
         for row in rows {
             let (id, count) = row.map_err(|e| {
-                SedimentError::Database(format!("Failed to read validation count: {}", e))
+                SandError::Database(format!("Failed to read validation count: {}", e))
             })?;
             map.insert(id, count);
         }
@@ -158,7 +155,7 @@ impl AccessTracker {
         let mut stmt = self
             .conn
             .prepare(&sql)
-            .map_err(|e| SedimentError::Database(format!("Failed to prepare query: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to prepare query: {}", e)))?;
 
         let params: Vec<&dyn rusqlite::types::ToSql> = item_ids
             .iter()
@@ -177,13 +174,12 @@ impl AccessTracker {
                     },
                 ))
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to query decay data: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to query decay data: {}", e)))?;
 
         let mut map = HashMap::new();
         for row in rows {
-            let (id, data) = row.map_err(|e| {
-                SedimentError::Database(format!("Failed to read decay data: {}", e))
-            })?;
+            let (id, data) =
+                row.map_err(|e| SandError::Database(format!("Failed to read decay data: {}", e)))?;
             map.insert(id, data);
         }
 
@@ -234,7 +230,7 @@ impl AccessTracker {
         let mut stmt = self
             .conn
             .prepare(&sql)
-            .map_err(|e| SedimentError::Database(format!("Failed to prepare query: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to prepare query: {}", e)))?;
 
         let params: Vec<&dyn rusqlite::types::ToSql> = item_ids
             .iter()
@@ -252,13 +248,12 @@ impl AccessTracker {
                     },
                 ))
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to query accesses: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to query accesses: {}", e)))?;
 
         let mut map = HashMap::new();
         for row in rows {
-            let (id, record) = row.map_err(|e| {
-                SedimentError::Database(format!("Failed to read access record: {}", e))
-            })?;
+            let (id, record) = row
+                .map_err(|e| SandError::Database(format!("Failed to read access record: {}", e)))?;
             map.insert(id, record);
         }
 

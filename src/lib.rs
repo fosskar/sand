@@ -1,4 +1,4 @@
-//! Sediment: Semantic memory for AI agents
+//! sand: Semantic memory for AI agents
 //!
 //! A local-first, MCP-native vector database for AI agent memory.
 //!
@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 pub mod access;
 pub mod chunker;
+pub mod cli;
 pub mod compaction;
 pub mod consolidation;
 pub mod db;
@@ -33,7 +34,7 @@ pub use chunker::{ChunkResult, ChunkingConfig, chunk_content};
 pub use db::Database;
 pub use document::ContentType;
 pub use embedder::{EMBEDDING_DIM, Embedder, EmbeddingModel};
-pub use error::{Result, SedimentError};
+pub use error::{Result, SandError};
 pub use item::{Chunk, ConflictInfo, Item, ItemFilters, SearchResult, StoreResult};
 pub use retry::{RetryConfig, with_retry};
 
@@ -111,36 +112,58 @@ impl std::fmt::Display for ListScope {
     }
 }
 
+/// Read the setting `SAND_<name>` from the environment.
+///
+/// Falls back to `SEDIMENT_<name>`, the name sand had before 0.6.0, when `SAND_<name>` is unset.
+pub fn setting(name: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(format!("SAND_{name}")) {
+        return Some(value);
+    }
+    let value = std::env::var(format!("SEDIMENT_{name}")).ok()?;
+    deprecated(&format!("SEDIMENT_{name}"), &format!("SAND_{name}"));
+    Some(value)
+}
+
+/// Tell the user on stderr, once per process for each `old`, that a Sediment fallback goes in 1.0.
+///
+/// Never print to stdout: it carries CLI JSON output and MCP JSON-RPC.
+pub fn deprecated(old: &str, new: &str) {
+    static SEEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    if SEEN.lock().unwrap().insert(old.to_string()) {
+        eprintln!("sand: {old} is deprecated and will be removed in 1.0, use {new}");
+    }
+}
+
 /// Get the central database path.
 ///
-/// Returns `~/.sediment/data` or the path specified in `SEDIMENT_DB` environment variable.
+/// Returns the path in the `SAND_DB` setting, else `~/.sand/data`, else Sediment's
+/// `~/.sediment/data` when only that exists.
 /// Note: LanceDB uses a directory, not a single file.
 pub fn central_db_path() -> PathBuf {
-    if let Ok(path) = std::env::var("SEDIMENT_DB") {
+    if let Some(path) = setting("DB") {
         return PathBuf::from(path);
     }
 
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".sediment")
-        .join("data")
+    default_db_path(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
 }
 
-/// Project configuration stored in `.sediment/config`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectConfig {
-    /// Unique project identifier (git root commit hash or UUID)
-    pub project_id: String,
-    /// How the project ID was derived: "git-root-commit" or "uuid"
-    #[serde(default = "default_source")]
-    pub source: String,
-    /// Set during UUID→git migration; cleared after LanceDB items are updated
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub migrated_from: Option<String>,
+fn default_db_path(home: &Path) -> PathBuf {
+    let legacy = home.join(".sediment").join("data");
+    if !home.join(".sand").exists() && legacy.exists() {
+        deprecated("~/.sediment/data", "~/.sand/data");
+        return legacy;
+    }
+    home.join(".sand").join("data")
 }
 
-fn default_source() -> String {
-    "uuid".to_string()
+/// Project configuration Sediment wrote to `.sediment/config`; sand only reads it.
+#[derive(Debug, Deserialize)]
+struct ProjectConfig {
+    project_id: String,
+    /// Set during Sediment's UUID→git migration; cleared after LanceDB items were updated
+    #[serde(default)]
+    migrated_from: Option<String>,
 }
 
 /// Derive a stable project ID from the git repository's initial (root) commit hash.
@@ -195,139 +218,164 @@ pub fn derive_git_root_commit(project_root: &Path) -> std::io::Result<Option<Str
     }
 }
 
-/// Return the config location for a project.
-///
-/// Git repositories keep their generated identity in central Sediment state.
-/// Non-Git projects retain the repository-local marker used for root discovery.
-fn project_config_paths(project_root: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
-    if project_root.join(".git").exists() {
-        let canonical = std::fs::canonicalize(project_root)?;
-        let key = format!(
-            "{:x}",
-            Sha256::digest(canonical.as_os_str().as_encoded_bytes())
-        );
-        let db_path = central_db_path();
-        let state_dir = db_path.parent().unwrap_or(&db_path);
-        let sediment_dir = state_dir.join("projects").join(key).join(".sediment");
-        let config_path = sediment_dir.join("config");
-        Ok((sediment_dir, config_path))
-    } else {
-        let sediment_dir = project_root.join(".sediment");
-        let config_path = sediment_dir.join("config");
-        Ok((sediment_dir, config_path))
-    }
+/// The project a working directory belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    /// Directory the id belongs to
+    pub root: PathBuf,
+    pub id: String,
+    /// UUID of a directory that became a git repository; its items still have to move to `id`
+    pub migrate_from: Option<String>,
 }
 
-/// Get or create the project ID for a given project root.
+/// Find the project of `dir`.
 ///
-/// Git project configs are cached in central Sediment state. Existing repository-local
-/// configs are imported on first use. Non-Git projects retain a local UUID config.
-pub fn get_or_create_project_id(project_root: &Path) -> std::io::Result<String> {
-    let (sediment_dir, config_path) = project_config_paths(project_root)?;
-    let local_config_path = project_root.join(".sediment").join("config");
+/// In a git repository the id is the root commit and nothing is stored. Elsewhere it is a UUID
+/// in the `projects` table of `access_db`, owned by the nearest ancestor that has one. Ids from
+/// Sediment's `.sediment/config` files are imported into the table; the files are only read.
+pub fn resolve_project(dir: &Path, access_db: &Path) -> Result<Project> {
+    let dir = std::fs::canonicalize(dir)?;
+    let table = ProjectTable::open(access_db)?;
+    let state_dir = access_db.parent().unwrap_or(Path::new("."));
 
-    if !config_path.exists() && config_path != local_config_path && local_config_path.exists() {
-        let content = std::fs::read_to_string(&local_config_path)?;
-        if let Ok(config) = serde_json::from_str::<ProjectConfig>(&content) {
-            std::fs::create_dir_all(&sediment_dir)?;
-            write_config_atomic(&sediment_dir, &config_path, &config)?;
-        }
-    }
-
-    // Try to read existing config
-    if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)?;
-        if let Ok(config) = serde_json::from_str::<ProjectConfig>(&content) {
-            if config.source == "git-root-commit" {
-                // Already derived from git — trust it
-                return Ok(config.project_id);
+    if let Some(id) = derive_git_root_commit(&dir)? {
+        let Some(git_root) = dir.ancestors().find(|d| d.join(".git").exists()) else {
+            return Ok(Project {
+                root: dir,
+                id,
+                migrate_from: None,
+            });
+        };
+        // a uuid stored below or at the git root belongs to the time before the repository
+        let mut migrate_from = None;
+        for level in dir.ancestors() {
+            let stored = match table.get(level)? {
+                Some(stored) => Some(stored),
+                None => legacy_config(level, state_dir)?
+                    .map(|config| config.migrated_from.unwrap_or(config.project_id)),
+            };
+            if let Some(stored) = stored {
+                if stored != id {
+                    table.insert(level, &stored)?;
+                    migrate_from = Some(stored);
+                }
+                break;
             }
-
-            // Source is "uuid" (or missing field from old config) — try to upgrade to git
-            if let Ok(Some(git_hash)) = derive_git_root_commit(project_root) {
-                let new_config = ProjectConfig {
-                    project_id: git_hash.clone(),
-                    source: "git-root-commit".to_string(),
-                    migrated_from: Some(config.project_id),
-                };
-                write_config_atomic(&sediment_dir, &config_path, &new_config)?;
-                return Ok(git_hash);
+            if level == git_root {
+                break;
             }
-
-            // Git derivation failed — keep existing UUID
-            return Ok(config.project_id);
         }
+        return Ok(Project {
+            root: git_root.to_path_buf(),
+            id,
+            migrate_from,
+        });
     }
 
-    // No existing config — create new one
-    std::fs::create_dir_all(&sediment_dir)?;
-
-    let config = if let Ok(Some(git_hash)) = derive_git_root_commit(project_root) {
-        ProjectConfig {
-            project_id: git_hash,
-            source: "git-root-commit".to_string(),
-            migrated_from: None,
+    let mut root = dir.as_path();
+    for level in dir.ancestors() {
+        if let Some(id) = table.get(level)? {
+            return Ok(Project {
+                root: level.to_path_buf(),
+                id,
+                migrate_from: None,
+            });
         }
-    } else {
-        ProjectConfig {
-            project_id: Uuid::new_v4().to_string(),
-            source: "uuid".to_string(),
-            migrated_from: None,
+        if let Some(config) = legacy_config(level, state_dir)? {
+            return Ok(Project {
+                root: level.to_path_buf(),
+                id: table.insert(level, &config.project_id)?,
+                migrate_from: None,
+            });
         }
-    };
-
-    write_config_atomic(&sediment_dir, &config_path, &config)?;
-
-    // Re-read to return the ID that actually persisted (could be from another process)
-    let final_content = std::fs::read_to_string(&config_path)?;
-    if let Ok(final_config) = serde_json::from_str::<ProjectConfig>(&final_content) {
-        Ok(final_config.project_id)
-    } else {
-        Ok(config.project_id)
+        // sediment made these directories project roots
+        if level.join(".sediment").is_dir() || level.join(".git").exists() {
+            root = level;
+            break;
+        }
     }
+    Ok(Project {
+        root: root.to_path_buf(),
+        id: table.insert(root, &Uuid::new_v4().to_string())?,
+        migrate_from: None,
+    })
 }
 
-/// Write a ProjectConfig atomically via temp file + rename.
-fn write_config_atomic(
-    sediment_dir: &Path,
-    config_path: &Path,
-    config: &ProjectConfig,
-) -> std::io::Result<()> {
-    let content =
-        serde_json::to_string_pretty(config).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let tmp_path = sediment_dir.join(format!("config.tmp.{}", std::process::id()));
-    std::fs::write(&tmp_path, &content)?;
-
-    if let Err(e) = std::fs::rename(&tmp_path, config_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
+/// Record that the items of `old_id` were moved to `new_id`.
+pub fn finish_project_migration(access_db: &Path, old_id: &str, new_id: &str) -> Result<()> {
+    ProjectTable::open(access_db)?
+        .conn
+        .execute(
+            "UPDATE projects SET project_id = ?1 WHERE project_id = ?2",
+            rusqlite::params![new_id, old_id],
+        )
+        .map_err(|e| SandError::Database(format!("Failed to update project ids: {}", e)))?;
     Ok(())
 }
 
-/// Check if a project ID migration is pending (UUID→git hash).
-///
-/// Returns the old project ID if a migration was started but LanceDB items
-/// have not yet been updated.
-pub fn pending_migration(project_root: &Path) -> Option<String> {
-    let (_, config_path) = project_config_paths(project_root).ok()?;
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let config: ProjectConfig = serde_json::from_str(&content).ok()?;
-    config.migrated_from
+/// Read the config Sediment kept for `dir`: in its central state, else in the directory.
+fn legacy_config(dir: &Path, state_dir: &Path) -> Result<Option<ProjectConfig>> {
+    let key = format!("{:x}", Sha256::digest(dir.as_os_str().as_encoded_bytes()));
+    let central = state_dir
+        .join("projects")
+        .join(key)
+        .join(".sediment/config");
+    for path in [central, dir.join(".sediment/config")] {
+        if path.exists()
+            && let Ok(config) = serde_json::from_str(&std::fs::read_to_string(&path)?)
+        {
+            return Ok(Some(config));
+        }
+    }
+    Ok(None)
 }
 
-/// Clear the migration marker after LanceDB items have been updated.
-pub fn clear_migration_marker(project_root: &Path) -> std::io::Result<()> {
-    let (sediment_dir, config_path) = project_config_paths(project_root)?;
+/// Project ids of directories outside git, in `access.db`.
+struct ProjectTable {
+    conn: rusqlite::Connection,
+}
 
-    let content = std::fs::read_to_string(&config_path)?;
-    if let Ok(mut config) = serde_json::from_str::<ProjectConfig>(&content)
-        && config.migrated_from.is_some()
-    {
-        config.migrated_from = None;
-        write_config_atomic(&sediment_dir, &config_path, &config)?;
+impl ProjectTable {
+    fn open(access_db: &Path) -> Result<Self> {
+        if let Some(parent) = access_db.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = rusqlite::Connection::open(access_db)
+            .map_err(|e| SandError::Database(format!("Failed to open project table: {}", e)))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+             CREATE TABLE IF NOT EXISTS projects (
+                 path TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 created_at INTEGER NOT NULL
+             );",
+        )
+        .map_err(|e| SandError::Database(format!("Failed to create projects table: {}", e)))?;
+        Ok(Self { conn })
     }
-    Ok(())
+
+    fn get(&self, path: &Path) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.conn
+            .query_row(
+                "SELECT project_id FROM projects WHERE path = ?1",
+                [path.to_string_lossy()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| SandError::Database(format!("Failed to read project id: {}", e)))
+    }
+
+    /// Store `id` for `path` unless a concurrent process stored one first; return the stored id.
+    fn insert(&self, path: &Path, id: &str) -> Result<String> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO projects (path, project_id, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![path.to_string_lossy(), id, chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| SandError::Database(format!("Failed to store project id: {}", e)))?;
+        Ok(self.get(path)?.unwrap_or_else(|| id.to_string()))
+    }
 }
 
 /// Apply similarity boosting based on project context.
@@ -347,57 +395,6 @@ pub fn boost_similarity(
     }
 }
 
-/// Find the project root by walking up from the given path.
-///
-/// Looks for directories containing `.sediment/` or `.git/` markers.
-/// Returns `None` if no project root is found.
-pub fn find_project_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
-
-    // If start is a file, use its parent directory
-    if current.is_file() {
-        current = current.parent()?.to_path_buf();
-    }
-
-    let mut depth = 0;
-    loop {
-        if depth >= 100 {
-            return None;
-        }
-        depth += 1;
-
-        // Check for .sediment directory first (explicit project marker)
-        if current.join(".sediment").is_dir() {
-            return Some(current);
-        }
-
-        // Check for .git directory as fallback
-        if current.join(".git").exists() {
-            return Some(current);
-        }
-
-        // Move to parent directory; stop at filesystem root
-        match current.parent() {
-            Some(parent) if parent == current => return None,
-            Some(parent) => current = parent.to_path_buf(),
-            None => return None,
-        }
-    }
-}
-
-/// Initialize a project directory for Sediment.
-///
-/// Creates the project config in central state for Git repositories and locally otherwise.
-pub fn init_project(project_root: &Path) -> std::io::Result<PathBuf> {
-    let (sediment_dir, _) = project_config_paths(project_root)?;
-    std::fs::create_dir_all(&sediment_dir)?;
-
-    // Generate project ID
-    get_or_create_project_id(project_root)?;
-
-    Ok(sediment_dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,17 +406,52 @@ mod tests {
     }
 
     #[test]
+    fn test_default_db_path_falls_back_to_sediment() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path();
+        std::fs::create_dir_all(home.join(".sediment/data")).unwrap();
+        assert_eq!(default_db_path(home), home.join(".sediment/data"));
+
+        std::fs::create_dir(home.join(".sand")).unwrap();
+        assert_eq!(default_db_path(home), home.join(".sand/data"));
+    }
+
+    #[test]
     fn test_store_scope_default_is_project() {
         assert_eq!(StoreScope::default(), StoreScope::Project);
     }
 
     #[test]
-    fn test_project_config_idempotent() {
-        // Fix #18: get_or_create_project_id should return the same ID on repeated calls
+    fn test_project_id_outside_git_is_stable_without_marker() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let id1 = get_or_create_project_id(tmp.path()).unwrap();
-        let id2 = get_or_create_project_id(tmp.path()).unwrap();
-        assert_eq!(id1, id2, "Repeated calls should return the same project ID");
+        let db = tmp.path().join("access.db");
+        let dir = tmp.path().join("p");
+        std::fs::create_dir(&dir).unwrap();
+        let first = resolve_project(&dir, &db).unwrap();
+        assert_eq!(resolve_project(&dir, &db).unwrap(), first);
+        assert!(!dir.join(".sand").exists() && !dir.join(".sediment").exists());
+    }
+
+    #[test]
+    fn test_subdirectory_resolves_to_parent_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = tmp.path().join("access.db");
+        let dir = tmp.path().join("p");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let parent = resolve_project(&dir, &db).unwrap();
+        assert_eq!(resolve_project(&dir.join("sub"), &db).unwrap(), parent);
+    }
+
+    #[test]
+    fn test_sediment_config_id_is_kept() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("p");
+        std::fs::create_dir_all(dir.join(".sediment")).unwrap();
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let config = format!(r#"{{"project_id": "{uuid}", "source": "uuid"}}"#);
+        std::fs::write(dir.join(".sediment/config"), config).unwrap();
+        let project = resolve_project(&dir, &tmp.path().join("access.db")).unwrap();
+        assert_eq!(project.id, uuid);
     }
 
     #[test]
@@ -427,14 +459,6 @@ mod tests {
         assert!((boost_similarity(0.5, Some("p1"), Some("p1")) - 0.5).abs() < 0.001);
         assert!((boost_similarity(0.5, Some("p1"), Some("p2")) - 0.4375).abs() < 0.001);
         assert!((boost_similarity(0.5, None, Some("p1")) - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_project_config_backward_compat() {
-        // Config JSON without 'source' field should deserialize with source="uuid"
-        let json = r#"{"project_id": "550e8400-e29b-41d4-a716-446655440000"}"#;
-        let config: ProjectConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.source, "uuid");
     }
 
     #[test]
@@ -495,162 +519,53 @@ mod tests {
         assert!(result.is_none(), "Non-git directory should return None");
     }
 
+    fn git_repo(dir: &Path) {
+        for args in [
+            &["init"][..],
+            &["config", "user.email", "test@test.com"],
+            &["config", "user.name", "Test"],
+            &["commit", "--allow-empty", "-m", "init"],
+        ] {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+        }
+    }
+
     #[test]
     #[ignore] // requires git
-    fn test_project_id_from_git_root_commit() {
+    fn test_project_id_from_git_root_commit_stores_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output()
+        let db = tmp.path().join("access.db");
+        let dir = tmp.path().join("repo");
+        std::fs::create_dir(&dir).unwrap();
+        git_repo(&dir);
+        let project = resolve_project(&dir, &db).unwrap();
+        assert_eq!(project.id, derive_git_root_commit(&dir).unwrap().unwrap());
+        let rows: i64 = ProjectTable::open(&db)
+            .unwrap()
+            .conn
+            .query_row("SELECT count(*) FROM projects", [], |row| row.get(0))
             .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-
-        let project_id = get_or_create_project_id(dir).unwrap();
-        let expected = derive_git_root_commit(dir).unwrap().unwrap();
-        assert_eq!(
-            project_id, expected,
-            "Project ID should be the git root commit hash"
-        );
-
-        // Verify config source
-        let config_content = std::fs::read_to_string(project_config_paths(dir).unwrap().1).unwrap();
-        let config: ProjectConfig = serde_json::from_str(&config_content).unwrap();
-        assert_eq!(config.source, "git-root-commit");
+        assert_eq!(rows, 0);
     }
 
     #[test]
     #[ignore] // requires git
     fn test_project_id_migration_uuid_to_git() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
+        let db = tmp.path().join("access.db");
+        let dir = tmp.path().join("repo");
+        std::fs::create_dir(&dir).unwrap();
+        let old = resolve_project(&dir, &db).unwrap().id;
+        git_repo(&dir);
 
-        // Write a UUID-based config first
-        let sediment_dir = dir.join(".sediment");
-        std::fs::create_dir_all(&sediment_dir).unwrap();
-        let old_uuid = "550e8400-e29b-41d4-a716-446655440000";
-        let old_config = format!(r#"{{"project_id": "{}"}}"#, old_uuid);
-        std::fs::write(sediment_dir.join("config"), &old_config).unwrap();
-
-        // Now create a git repo with a commit
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-
-        // Calling get_or_create_project_id should migrate to git hash
-        let project_id = get_or_create_project_id(dir).unwrap();
-        let git_hash = derive_git_root_commit(dir).unwrap().unwrap();
-        assert_eq!(project_id, git_hash, "Should migrate to git hash");
-
-        // Config should now have git-root-commit source with migrated_from
-        let config_content = std::fs::read_to_string(project_config_paths(dir).unwrap().1).unwrap();
-        let config: ProjectConfig = serde_json::from_str(&config_content).unwrap();
-        assert_eq!(config.source, "git-root-commit");
-        assert_eq!(config.migrated_from.as_deref(), Some(old_uuid));
-
-        // pending_migration should return the old UUID
-        assert_eq!(pending_migration(dir), Some(old_uuid.to_string()));
-
-        // clear_migration_marker should remove it
-        clear_migration_marker(dir).unwrap();
-        assert_eq!(pending_migration(dir), None);
-    }
-
-    #[test]
-    #[ignore] // requires git
-    fn test_git_root_commit_fast_path() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        // Create git repo with commit
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-
-        // First call creates config with git-root-commit source
-        let id1 = get_or_create_project_id(dir).unwrap();
-
-        // Second call should return immediately (fast path) without re-deriving
-        let id2 = get_or_create_project_id(dir).unwrap();
-        assert_eq!(id1, id2, "Fast path should return same ID");
-
-        // Verify config has git-root-commit source
-        let config_content = std::fs::read_to_string(project_config_paths(dir).unwrap().1).unwrap();
-        let config: ProjectConfig = serde_json::from_str(&config_content).unwrap();
-        assert_eq!(config.source, "git-root-commit");
-        assert!(
-            config.migrated_from.is_none(),
-            "No migration on fresh git config"
-        );
-    }
-
-    #[test]
-    fn test_uuid_retained_when_git_unavailable() {
-        // Non-git directory: UUID config should be created and retained
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let id1 = get_or_create_project_id(dir).unwrap();
-
-        // Verify it's a UUID with source "uuid"
-        let config_content = std::fs::read_to_string(dir.join(".sediment/config")).unwrap();
-        let config: ProjectConfig = serde_json::from_str(&config_content).unwrap();
-        assert_eq!(config.source, "uuid");
-        assert!(config.migrated_from.is_none());
-
-        // Second call should return the same UUID
-        let id2 = get_or_create_project_id(dir).unwrap();
-        assert_eq!(id1, id2, "UUID should be retained on repeated calls");
+        let project = resolve_project(&dir, &db).unwrap();
+        assert_eq!(project.migrate_from.as_deref(), Some(old.as_str()));
+        finish_project_migration(&db, &old, &project.id).unwrap();
+        assert_eq!(resolve_project(&dir, &db).unwrap().migrate_from, None);
     }
 
     #[test]

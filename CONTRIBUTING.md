@@ -1,6 +1,6 @@
-# Contributing to Sediment
+# Contributing to sand
 
-Thanks for your interest in contributing to Sediment!
+Thanks for your interest in contributing to sand!
 
 ## Getting Started
 

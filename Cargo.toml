@@ -1,6 +1,6 @@
 [package]
-name = "sediment-mcp"
-version = "0.5.1"
+name = "sand"
+version = "0.6.0"
 edition = "2024"
 repository = "https://github.com/fosskar/sand"
 homepage = "https://github.com/fosskar/sand"
@@ -10,14 +10,19 @@ license = "MIT"
 readme = "README.md"
 keywords = ["mcp", "memory", "semantic-search", "ai-agent", "embeddings"]
 categories = ["command-line-utilities", "database"]
+default-run = "sand"
 
 [lib]
-name = "sediment"
+name = "sand"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sediment"
+name = "sand"
 path = "src/main.rs"
+
+[[bin]]
+name = "sediment"
+path = "src/bin/sediment.rs"
 
 [dependencies]
 # Database - LanceDB for vector storage
@@ -41,7 +46,7 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 
 # CLI
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
 
 # Access tracking

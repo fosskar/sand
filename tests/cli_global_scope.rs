@@ -6,18 +6,18 @@ use serde_json::Value;
 const PROJECT_A: &str = "00000000000000000000000000000000000000aa";
 const PROJECT_B: &str = "00000000000000000000000000000000000000bb";
 
-fn sediment(dir: &Path, project_id: &str, args: &[&str]) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_sediment"))
+fn sand(dir: &Path, project_id: &str, args: &[&str]) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_sand"))
         .current_dir(dir)
-        .env("SEDIMENT_DB", dir.join("data"))
-        .env("SEDIMENT_PROJECT_ID", project_id)
+        .env("SAND_DB", dir.join("data"))
+        .env("SAND_PROJECT_ID", project_id)
         .arg("--json")
         .args(args)
         .output()
         .unwrap();
     assert!(
         output.status.success(),
-        "sediment {:?} failed: {}",
+        "sand {:?} failed: {}",
         args,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -25,7 +25,7 @@ fn sediment(dir: &Path, project_id: &str, args: &[&str]) -> Value {
 }
 
 fn list(dir: &Path, project_id: &str, scope: &str) -> Vec<(String, String)> {
-    sediment(dir, project_id, &["list", "--scope", scope])["items"]
+    sand(dir, project_id, &["list", "--scope", scope])["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -44,7 +44,7 @@ fn test_cli_store_global_scope_is_global() {
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path();
 
-    let old_id = sediment(
+    let old_id = sand(
         dir,
         PROJECT_A,
         &[
@@ -63,7 +63,7 @@ fn test_cli_store_global_scope_is_global() {
     );
     assert!(list(dir, PROJECT_A, "project").is_empty());
 
-    let new_id = sediment(
+    let new_id = sand(
         dir,
         PROJECT_A,
         &[
@@ -86,7 +86,7 @@ fn test_cli_store_global_scope_is_global() {
     assert_eq!(list(dir, PROJECT_A, "all").len(), 1);
 
     // another project sees the item as global: no cross-project flag, may forget it
-    let recall = sediment(
+    let recall = sand(
         dir,
         PROJECT_B,
         &["recall", "the user prefers tabs over spaces, width 4"],
@@ -99,6 +99,6 @@ fn test_cli_store_global_scope_is_global() {
         .expect("recall should return the global item");
     assert!(hit.get("cross_project").is_none(), "got: {}", hit);
 
-    sediment(dir, PROJECT_B, &["forget", &new_id]);
+    sand(dir, PROJECT_B, &["forget", &new_id]);
     assert!(list(dir, PROJECT_A, "all").is_empty());
 }

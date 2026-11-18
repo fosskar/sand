@@ -32,8 +32,9 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.sediment;
-        sediment = pkgs.callPackage ./nix/package.nix { };
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.sand;
+        sand = pkgs.callPackage ./nix/package.nix { };
+        sediment = self.packages.${pkgs.stdenv.hostPlatform.system}.sand;
       });
 
       devShells = forAllSystems (pkgs: {
@@ -57,12 +58,12 @@
           inherit (pkgs.stdenv.hostPlatform) system;
         in
         {
-          package = self.packages.${system}.sediment;
+          package = self.packages.${system}.sand;
 
           formatting = treefmtFor.${system}.config.build.check self;
 
-          clippy = self.packages.${system}.sediment.overrideAttrs (old: {
-            pname = "sediment-clippy";
+          clippy = self.packages.${system}.sand.overrideAttrs (old: {
+            pname = "sand-clippy";
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
             buildPhase = ''
               runHook preBuild

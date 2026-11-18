@@ -9,7 +9,7 @@ use std::sync::Arc;
 use rusqlite::{Connection, params};
 use tracing::{debug, info, warn};
 
-use crate::error::{Result, SedimentError};
+use crate::error::{Result, SandError};
 
 /// A pending consolidation candidate.
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ impl ConsolidationQueue {
     /// Uses the same SQLite file as access tracking.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).map_err(|e| {
-            SedimentError::Database(format!("Failed to open consolidation database: {}", e))
+            SandError::Database(format!("Failed to open consolidation database: {}", e))
         })?;
 
         if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
@@ -47,7 +47,7 @@ impl ConsolidationQueue {
             );",
         )
         .map_err(|e| {
-            SedimentError::Database(format!("Failed to create consolidation_queue table: {}", e))
+            SandError::Database(format!("Failed to create consolidation_queue table: {}", e))
         })?;
 
         Ok(Self { conn })
@@ -69,7 +69,7 @@ impl ConsolidationQueue {
              VALUES (?1, ?2, ?3, 'pending', ?4)",
             params![a, b, similarity, now],
         ).map_err(|e| {
-            SedimentError::Database(format!("Failed to enqueue consolidation: {}", e))
+            SandError::Database(format!("Failed to enqueue consolidation: {}", e))
         })?;
 
         debug!(
@@ -89,7 +89,7 @@ impl ConsolidationQueue {
              ORDER BY similarity DESC
              LIMIT ?1",
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to prepare fetch: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to prepare fetch: {}", e)))?;
 
         let rows = stmt
             .query_map(params![limit as i64], |row| {
@@ -99,12 +99,12 @@ impl ConsolidationQueue {
                     similarity: row.get(2)?,
                 })
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to fetch pending: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to fetch pending: {}", e)))?;
 
         let mut candidates = Vec::new();
         for row in rows {
-            let candidate = row
-                .map_err(|e| SedimentError::Database(format!("Failed to read candidate: {}", e)))?;
+            let candidate =
+                row.map_err(|e| SandError::Database(format!("Failed to read candidate: {}", e)))?;
             candidates.push(candidate);
         }
 
@@ -125,7 +125,7 @@ impl ConsolidationQueue {
                 params![processed_cutoff, pending_cutoff],
             )
             .map_err(|e| {
-                SedimentError::Database(format!("Failed to cleanup consolidation queue: {}", e))
+                SandError::Database(format!("Failed to cleanup consolidation queue: {}", e))
             })?;
         Ok(())
     }
@@ -142,7 +142,7 @@ impl ConsolidationQueue {
             "UPDATE consolidation_queue SET status = ?1 WHERE item_id_a = ?2 AND item_id_b = ?3",
             params![status, a, b],
         ).map_err(|e| {
-            SedimentError::Database(format!("Failed to mark processed: {}", e))
+            SandError::Database(format!("Failed to mark processed: {}", e))
         })?;
 
         Ok(())
@@ -198,7 +198,7 @@ pub async fn run_consolidation_batch(
     // Open fresh DB and graph connections
     let mut db = crate::Database::open_with_embedder(db_path, project_id, embedder)
         .await
-        .map_err(|e| SedimentError::Database(format!("Consolidation DB open failed: {}", e)))?;
+        .map_err(|e| SandError::Database(format!("Consolidation DB open failed: {}", e)))?;
 
     for candidate in &candidates {
         let result = process_candidate(&mut db, access_db_path, candidate).await;

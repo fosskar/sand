@@ -1,4 +1,4 @@
-//! MCP Tool definitions for Sediment
+//! MCP Tool definitions for sand
 //!
 //! 4 tools: store, recall, list, forget
 

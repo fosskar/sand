@@ -60,8 +60,8 @@ pub fn run(db_path: &Path, project_id: Option<String>) -> Result<()> {
     tracing::info!("Embedder loaded successfully");
 
     // Derive access DB path as sibling to the LanceDB data directory
-    let sediment_dir = db_path.parent().unwrap_or(db_path);
-    let access_db_path = sediment_dir.join("access.db");
+    let sand_dir = db_path.parent().unwrap_or(db_path);
+    let access_db_path = sand_dir.join("access.db");
 
     // Get current working directory
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -243,16 +243,16 @@ fn handle_request(rt: &Runtime, ctx: &ServerContext, line: &str) -> Option<Respo
 /// Handle initialize request
 fn handle_initialize(id: Option<Value>) -> Response {
     let instructions = "\
-Sediment is the user's long-term memory, shared by all agents and sessions: recall before work where earlier context could matter, and store preferences, decisions and durable facts (scope global unless specific to the current repository). All data stays on disk — no API keys required.
+sand is the user's long-term memory, shared by all agents and sessions: recall before work where earlier context could matter, and store preferences, decisions and durable facts (scope global unless specific to the current repository). All data stays on disk — no API keys required.
 
 Environment variables (set before starting the server or CLI):
-- SEDIMENT_DB: Override database path (default: ~/.sediment/data). \
-Useful for ephemeral or isolated storage, e.g. SEDIMENT_DB=/tmp/task-xyz sediment store \"...\".
-- SEDIMENT_EMBEDDING_MODEL: Override embedding model (default: all-MiniLM-L6-v2). \
+- SAND_DB: Override database path (default: ~/.sand/data). \
+Useful for ephemeral or isolated storage, e.g. SAND_DB=/tmp/task-xyz sand store \"...\".
+- SAND_EMBEDDING_MODEL: Override embedding model (default: all-MiniLM-L6-v2). \
 Options: all-MiniLM-L6-v2, bge-small-en-v1.5.
 
-Sediment is also available as a CLI: sediment store, sediment recall, sediment list, sediment forget. \
-Run `sediment --help` for details."
+sand is also available as a CLI: sand store, sand recall, sand list, sand forget. \
+Run `sand --help` for details."
         .to_string();
 
     let result = InitializeResult {
@@ -263,7 +263,7 @@ Run `sediment --help` for details."
             },
         },
         server_info: ServerInfo {
-            name: "sediment".to_string(),
+            name: "sand".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
         instructions: Some(instructions),
