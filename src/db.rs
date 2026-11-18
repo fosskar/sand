@@ -34,7 +34,7 @@ pub fn is_valid_id(s: &str) -> bool {
 
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Int64Array, RecordBatch,
-    RecordBatchIterator, StringArray,
+    RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{TimeZone, Utc};
@@ -189,6 +189,13 @@ impl Database {
         let db = connect(path.to_str().ok_or_else(|| {
             SandError::Database("Database path contains invalid UTF-8".to_string())
         })?)
+        // create tables as lancedb 0.17 did, so sand 0.6.0 and sediment 0.5.1 can read them
+        .database_options(
+            &lancedb::database::listing::ListingDatabaseOptions::builder()
+                .data_storage_version(lancedb::connection::LanceFileVersion::V2_0)
+                .enable_v2_manifest_paths(false)
+                .build(),
+        )
         .execute()
         .await
         .map_err(|e| SandError::Database(format!("Failed to connect to database: {}", e)))?;
@@ -351,14 +358,14 @@ impl Database {
             if !results.is_empty() {
                 let batches = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
                 new_table
-                    .add(Box::new(batches))
+                    .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                     .execute()
                     .await
                     .map_err(|e| SandError::Database(format!("Failed to restore items: {}", e)))?;
             }
 
             self.db
-                .drop_table("items_migrated")
+                .drop_table("items_migrated", &[])
                 .await
                 .map_err(|e| SandError::Database(format!("Failed to drop staging table: {}", e)))?;
             info!("Recovery case A completed");
@@ -369,16 +376,22 @@ impl Database {
             if has_old_schema {
                 // Case B: migration never completed, old data intact. Drop staging.
                 info!("Recovery case B: dropping incomplete staging table");
-                self.db.drop_table("items_migrated").await.map_err(|e| {
-                    SandError::Database(format!("Failed to drop staging table: {}", e))
-                })?;
+                self.db
+                    .drop_table("items_migrated", &[])
+                    .await
+                    .map_err(|e| {
+                        SandError::Database(format!("Failed to drop staging table: {}", e))
+                    })?;
                 // Migration will re-run in ensure_tables
             } else {
                 // Case C: migration completed, just cleanup staging
                 info!("Recovery case C: dropping leftover staging table");
-                self.db.drop_table("items_migrated").await.map_err(|e| {
-                    SandError::Database(format!("Failed to drop staging table: {}", e))
-                })?;
+                self.db
+                    .drop_table("items_migrated", &[])
+                    .await
+                    .map_err(|e| {
+                        SandError::Database(format!("Failed to drop staging table: {}", e))
+                    })?;
             }
         }
 
@@ -445,7 +458,7 @@ impl Database {
             .map_err(|e| SandError::Database(format!("Failed to list tables: {}", e)))?;
         if table_names.contains(&"items_migrated".to_string()) {
             self.db
-                .drop_table("items_migrated")
+                .drop_table("items_migrated", &[])
                 .await
                 .map_err(|e| SandError::Database(format!("Failed to drop stale staging: {}", e)))?;
         }
@@ -463,7 +476,7 @@ impl Database {
         if !new_batches.is_empty() {
             let batches = RecordBatchIterator::new(new_batches.into_iter().map(Ok), schema.clone());
             staging_table
-                .add(Box::new(batches))
+                .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                 .execute()
                 .await
                 .map_err(|e| {
@@ -478,7 +491,7 @@ impl Database {
             .map_err(|e| SandError::Database(format!("Failed to count staging rows: {}", e)))?;
         if staging_count != old_count {
             // Staging is incomplete — drop it and bail
-            let _ = self.db.drop_table("items_migrated").await;
+            let _ = self.db.drop_table("items_migrated", &[]).await;
             return Err(SandError::Database(format!(
                 "Staging row count mismatch: expected {}, got {}",
                 old_count, staging_count
@@ -487,7 +500,7 @@ impl Database {
 
         // Step 7: Drop old items (data is safe in staging)
         self.db
-            .drop_table("items")
+            .drop_table("items", &[])
             .await
             .map_err(|e| SandError::Database(format!("Failed to drop old items table: {}", e)))?;
 
@@ -511,7 +524,7 @@ impl Database {
         if !staging_data.is_empty() {
             let batches = RecordBatchIterator::new(staging_data.into_iter().map(Ok), schema);
             new_table
-                .add(Box::new(batches))
+                .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                 .execute()
                 .await
                 .map_err(|e| {
@@ -521,7 +534,7 @@ impl Database {
 
         // Step 9: Drop staging table (cleanup)
         self.db
-            .drop_table("items_migrated")
+            .drop_table("items_migrated", &[])
             .await
             .map_err(|e| SandError::Database(format!("Failed to drop staging table: {}", e)))?;
 
@@ -622,8 +635,14 @@ impl Database {
                 // Always replace: LanceDB FTS indexes are not auto-updated on insert,
                 // so we rebuild to ensure newly stored items are searchable.
                 if row_count > 0 {
+                    // the tokenizer defaults of lancedb 0.17; newer lance stems, drops stop words and folds ascii
+                    let fts = lancedb::index::scalar::FtsIndexBuilder::default()
+                        .with_position(true)
+                        .stem(false)
+                        .remove_stop_words(false)
+                        .ascii_folding(false);
                     match table
-                        .create_index(&["content"], lancedb::index::Index::FTS(Default::default()))
+                        .create_index(&["content"], lancedb::index::Index::FTS(fts))
                         .replace(true)
                         .execute()
                         .await
@@ -701,7 +720,7 @@ impl Database {
             RecordBatchIterator::new(vec![Ok(batch)], Arc::new(item_schema(item.embedding.len())));
 
         table
-            .add(Box::new(batches))
+            .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
             .execute()
             .await
             .map_err(|e| SandError::Database(format!("Failed to store item: {}", e)))?;
@@ -790,7 +809,7 @@ impl Database {
             let schema = Arc::new(chunk_schema(embedder.dimension()));
             let batches = RecordBatchIterator::new(all_chunk_batches.into_iter().map(Ok), schema);
             chunks_table
-                .add(Box::new(batches))
+                .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                 .execute()
                 .await
                 .map_err(|e| SandError::Database(format!("Failed to store chunks: {}", e)))?;
@@ -807,8 +826,9 @@ impl Database {
         query: &str,
         limit: usize,
     ) -> Option<std::collections::HashMap<String, f32>> {
-        let fts_query =
-            FullTextSearchQuery::new(query.to_string()).columns(Some(vec!["content".to_string()]));
+        let fts_query = FullTextSearchQuery::new(query.to_string())
+            .with_column("content".to_string())
+            .ok()?;
 
         let fts_results = table
             .query()
@@ -1487,6 +1507,7 @@ pub async fn migrate_project_id(
             .await
             .map_err(|e| SandError::Database(format!("Failed to migrate items: {}", e)))?;
 
+        let updated = updated.rows_updated;
         total_updated += updated;
         info!(
             "Migrated {} items from project {} to {}",
@@ -2033,7 +2054,10 @@ mod tests {
         let batch = old_item_batch("test-id-1", "old content");
         let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2106,7 +2130,10 @@ mod tests {
         let batch2 = old_item_batch("id-bbb", "second item content");
         let batches = RecordBatchIterator::new(vec![Ok(batch1), Ok(batch2)], schema);
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2177,7 +2204,10 @@ mod tests {
 
         let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
         db_conn
-            .create_table("items_migrated", Box::new(batches))
+            .create_table(
+                "items_migrated",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2219,7 +2249,10 @@ mod tests {
         let batch = old_item_batch("old-id", "old content");
         let batches = RecordBatchIterator::new(vec![Ok(batch)], old_schema);
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2298,7 +2331,10 @@ mod tests {
 
         let batches = RecordBatchIterator::new(vec![Ok(batch)], new_schema.clone());
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
