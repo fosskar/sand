@@ -40,12 +40,18 @@ The crates.io package `sediment-mcp` and the Homebrew formula `rendro/tap/sedime
 
 ## Coming from Sediment
 
-sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. It uses the same data and the same on-disk format, and it never moves or copies the database.
+sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup.
+
+These stay permanently:
+
+- sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged. It never moves or copies the database.
+- A `.sediment/` directory still marks a project root. When `.sand/config` is missing, sand copies the project's `.sediment/config`, from the project directory or from the central state next to the database, so the project ID stays the same. The `.sediment/config` file is left in place.
+
+These old names are accepted until 1.0 and then removed. While sand uses one of the first three, it prints one line per process on stderr that names the replacement.
 
 - A `sediment` executable is installed next to `sand` and behaves the same. MCP client configurations that start `sediment` keep working.
 - Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_PROJECT_ID`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
 - Without a database path, sand uses `~/.sand/data`. If `~/.sand` does not exist and `~/.sediment/data` does, it uses `~/.sediment/data`.
-- A `.sediment/` directory still marks a project root. When `.sand/config` is missing, sand copies the project's `.sediment/config`, from the project directory or from the central state next to the database, so the project ID stays the same. The `.sediment/config` file is left in place.
 - `sand init` recognises the instructions Sediment wrote (`mcp__sediment__`) and does not add a second block.
 
 ## Setup

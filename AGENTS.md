@@ -4,6 +4,8 @@ Guidance for coding agents working in this repository.
 
 This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and project markers keep working (README.md, "Coming from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
 
+Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice except `init`): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), the `~/.sediment/data` default in `default_db_path`, and `mcp__sediment__` in `has_sand_instructions`. The database format and the `.sediment/config` import stay.
+
 ## Build Commands
 
 ```bash

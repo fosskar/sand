@@ -116,9 +116,23 @@ impl std::fmt::Display for ListScope {
 ///
 /// Falls back to `SEDIMENT_<name>`, the name sand had before 0.6.0, when `SAND_<name>` is unset.
 pub fn setting(name: &str) -> Option<String> {
-    std::env::var(format!("SAND_{name}"))
-        .or_else(|_| std::env::var(format!("SEDIMENT_{name}")))
-        .ok()
+    if let Ok(value) = std::env::var(format!("SAND_{name}")) {
+        return Some(value);
+    }
+    let value = std::env::var(format!("SEDIMENT_{name}")).ok()?;
+    deprecated(&format!("SEDIMENT_{name}"), &format!("SAND_{name}"));
+    Some(value)
+}
+
+/// Tell the user on stderr, once per process for each `old`, that a Sediment fallback goes in 1.0.
+///
+/// Never print to stdout: it carries CLI JSON output and MCP JSON-RPC.
+pub fn deprecated(old: &str, new: &str) {
+    static SEEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    if SEEN.lock().unwrap().insert(old.to_string()) {
+        eprintln!("sand: {old} is deprecated and will be removed in 1.0, use {new}");
+    }
 }
 
 /// Get the central database path.
@@ -137,6 +151,7 @@ pub fn central_db_path() -> PathBuf {
 fn default_db_path(home: &Path) -> PathBuf {
     let legacy = home.join(".sediment").join("data");
     if !home.join(".sand").exists() && legacy.exists() {
+        deprecated("~/.sediment/data", "~/.sand/data");
         return legacy;
     }
     home.join(".sand").join("data")
