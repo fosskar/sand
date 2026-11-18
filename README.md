@@ -28,6 +28,14 @@ Combines vector search, a relationship graph, and access tracking into a unified
 
 ## Install
 
+Releases contain a binary for Linux x86_64. It is built on Ubuntu 22.04 and needs glibc 2.34 or newer (`ldd --version` shows yours) and `libstdc++`, so it does not run on musl distributions such as Alpine. The installer downloads it from the latest GitHub release, checks it against `SHA256SUMS`, and puts `sand` into `~/.local/bin` (set `SAND_INSTALL_DIR` to change that):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fosskar/sand/main/install.sh | sh
+```
+
+The release contains only `sand`, not the `sediment` executable. On other systems, build from source:
+
 ```bash
 # From this repository
 cargo install --git https://github.com/fosskar/sand
@@ -35,6 +43,8 @@ cargo install --git https://github.com/fosskar/sand
 # From a checkout
 cargo install --path .
 ```
+
+With Nix, `nix run github:fosskar/sand` runs it, and the flake's `packages.<system>.sand` installs it.
 
 The crates.io package `sediment-mcp` and the Homebrew formula `rendro/tap/sediment` install the original Sediment, not this repository.
 
@@ -62,7 +72,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 ### Removed
 
-- The Homebrew formula, the shell installer and the GitHub release workflow. This repository currently publishes no prebuilt binaries and no crates.io package; install with `cargo install` or the Nix flake. A Linux release with binaries and an installer is planned.
+- The Homebrew formula, the macOS binaries and the crates.io package. A GitHub Actions workflow builds the Linux x86_64 release binary again, and `install.sh` installs it; other systems install with `cargo install` or the Nix flake.
 
 ### Compatibility
 
