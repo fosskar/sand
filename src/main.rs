@@ -1,4 +1,4 @@
-//! Sediment MCP Server
+//! sand MCP Server
 //!
 //! Semantic memory for AI agents - local-first, MCP-native.
 //! Run this binary to start the MCP server.
@@ -12,20 +12,20 @@ use serde_json::json;
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Parser)]
-#[command(name = "sediment")]
+#[command(name = "sand")]
 #[command(about = "Semantic memory for AI agents - local-first, MCP-native")]
 #[command(version)]
 #[command(after_long_help = "\
 Environment variables:
-  SEDIMENT_DB              Override database path (default: ~/.sediment/data).
-                           Useful for ephemeral/isolated storage:
-                             SEDIMENT_DB=/tmp/task-xyz sediment store \"...\"
-  SEDIMENT_EMBEDDING_MODEL Override embedding model (default: all-MiniLM-L6-v2).
-                           Options: all-MiniLM-L6-v2, bge-small-en-v1.5
+  SAND_DB              Override database path (default: ~/.sand/data).
+                       Useful for ephemeral/isolated storage:
+                         SAND_DB=/tmp/task-xyz sand store \"...\"
+  SAND_EMBEDDING_MODEL Override embedding model (default: all-MiniLM-L6-v2).
+                       Options: all-MiniLM-L6-v2, bge-small-en-v1.5
 ")]
 struct Cli {
-    /// Database path [default: ~/.sediment/data]
-    #[arg(long, global = true, env = "SEDIMENT_DB")]
+    /// Database path [default: ~/.sand/data]
+    #[arg(long, global = true, env = "SAND_DB")]
     db: Option<PathBuf>,
 
     /// Enable verbose output
@@ -126,13 +126,13 @@ fn main() -> Result<()> {
     // For CLI commands, only show logs if verbose is enabled
     // For MCP server (no command), always show info logs
     let filter = if cli.verbose {
-        EnvFilter::new("sediment=debug")
+        EnvFilter::new("sand=debug")
     } else if cli.command.is_none() {
         // MCP server mode - show info logs
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("sediment=info"))
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("sand=info"))
     } else {
         // CLI command mode - suppress logs unless verbose
-        EnvFilter::new("sediment=warn")
+        EnvFilter::new("sand=warn")
     };
 
     fmt()
@@ -186,18 +186,18 @@ fn run_consolidate(
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let embedder = std::sync::Arc::new(sediment::Embedder::new()?);
+        let embedder = std::sync::Arc::new(sand::Embedder::new()?);
         let mut batches = 0usize;
 
         while batches < max_batches {
-            let queue = sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
+            let queue = sand::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
             let empty = queue.fetch_pending(1)?.is_empty();
             drop(queue);
             if empty {
                 break;
             }
 
-            sediment::consolidation::run_consolidation_batch(
+            sand::consolidation::run_consolidation_batch(
                 &ctx.db_path,
                 &ctx.access_db_path,
                 ctx.project_id.clone(),
@@ -210,7 +210,7 @@ fn run_consolidate(
         // fetch_pending casts its limit to i64; keep it well inside range
         // rather than relying on usize::MAX wrapping to SQLite's LIMIT -1.
         const REMAINING_CAP: usize = 1_000_000;
-        let queue = sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
+        let queue = sand::consolidation::ConsolidationQueue::open(&ctx.access_db_path)?;
         let remaining = queue.fetch_pending(REMAINING_CAP)?.len();
         queue.cleanup_processed().ok();
 
@@ -230,47 +230,47 @@ fn run_consolidate(
 /// Run the MCP server (default behavior)
 fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
     // Get database path
-    let db_path = db_override.unwrap_or_else(sediment::central_db_path);
+    let db_path = db_override.unwrap_or_else(sand::central_db_path);
 
     // Auto-detect project context from current directory
-    // If no .git or .sediment marker found, use cwd as project root
+    // If no .git or .sand marker found, use cwd as project root
     let cwd = std::env::current_dir().ok();
     let project_root = cwd
         .as_deref()
-        .map(|dir| sediment::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
+        .map(|dir| sand::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
     let project_id = project_root
         .as_ref()
-        .and_then(|root| sediment::get_or_create_project_id(root).ok());
+        .and_then(|root| sand::get_or_create_project_id(root).ok());
 
     // Check for pending project ID migration (UUID → git hash)
     if let Some(ref root) = project_root
-        && let Some(old_id) = sediment::pending_migration(root)
+        && let Some(old_id) = sand::pending_migration(root)
         && let Some(ref new_id) = project_id
     {
         tracing::info!("Migrating project ID: {} → {}", old_id, new_id);
 
         // Migrate LanceDB items
         let rt = tokio::runtime::Runtime::new()?;
-        if let Err(e) = rt.block_on(sediment::db::migrate_project_id(&db_path, &old_id, new_id)) {
+        if let Err(e) = rt.block_on(sand::db::migrate_project_id(&db_path, &old_id, new_id)) {
             tracing::warn!("Failed to migrate LanceDB items: {}", e);
         }
 
         // Migrate graph nodes
-        let sediment_dir = db_path.parent().unwrap_or(&db_path);
-        let access_db_path = sediment_dir.join("access.db");
-        if let Ok(graph) = sediment::graph::GraphStore::open(&access_db_path)
+        let sand_dir = db_path.parent().unwrap_or(&db_path);
+        let access_db_path = sand_dir.join("access.db");
+        if let Ok(graph) = sand::graph::GraphStore::open(&access_db_path)
             && let Err(e) = graph.migrate_project_id(&old_id, new_id)
         {
             tracing::warn!("Failed to migrate graph nodes: {}", e);
         }
 
         // Clear migration marker
-        if let Err(e) = sediment::clear_migration_marker(root) {
+        if let Err(e) = sand::clear_migration_marker(root) {
             tracing::warn!("Failed to clear migration marker: {}", e);
         }
     }
 
-    tracing::info!("Starting Sediment MCP server");
+    tracing::info!("Starting sand MCP server");
     tracing::info!("Database: {:?}", db_path);
 
     if let Some(ref root) = project_root {
@@ -282,17 +282,17 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
     }
 
     // Run MCP server
-    sediment::mcp::run(&db_path, project_id)?;
+    sand::mcp::run(&db_path, project_id)?;
 
     Ok(())
 }
 
-/// Check if a file contains Sediment instructions
-fn has_sediment_instructions(path: &PathBuf) -> bool {
+/// Check if a file contains sand instructions
+fn has_sand_instructions(path: &PathBuf) -> bool {
     if path.exists()
         && let Ok(content) = std::fs::read_to_string(path)
     {
-        return content.contains("mcp__sediment__");
+        return content.contains("mcp__sand__");
     }
     false
 }
@@ -304,13 +304,13 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     // Find or create project root
-    let project_root = sediment::find_project_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let project_root = sand::find_project_root(&cwd).unwrap_or_else(|| cwd.clone());
 
-    println!("Initializing Sediment for: {}", project_root.display());
+    println!("Initializing sand for: {}", project_root.display());
 
-    // Create .sediment directory and project ID
-    let sediment_dir = sediment::init_project(&project_root)?;
-    println!("Created: {}", sediment_dir.display());
+    // Create .sand directory and project ID
+    let sand_dir = sand::init_project(&project_root)?;
+    println!("Created: {}", sand_dir.display());
 
     // Determine CLAUDE.md paths
     let local_claude_md = project_root.join("CLAUDE.md");
@@ -319,13 +319,13 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
 
     // Check if instructions already exist in either location
-    let local_has_instructions = has_sediment_instructions(&local_claude_md);
-    let global_has_instructions = has_sediment_instructions(&global_claude_md);
+    let local_has_instructions = has_sand_instructions(&local_claude_md);
+    let global_has_instructions = has_sand_instructions(&global_claude_md);
 
     // If both already have instructions, we're done
     if local_has_instructions && global_has_instructions {
-        println!("Sediment instructions already present in both local and global CLAUDE.md");
-        println!("\nSediment initialized successfully!");
+        println!("sand instructions already present in both local and global CLAUDE.md");
+        println!("\nsand initialized successfully!");
         println!("The MCP server will now auto-detect this project.");
         return Ok(());
     }
@@ -333,16 +333,16 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
     // Determine target based on flags or interactive prompt
     let claude_md_path = if use_local {
         if local_has_instructions {
-            println!("Local CLAUDE.md already contains Sediment instructions");
-            println!("\nSediment initialized successfully!");
+            println!("Local CLAUDE.md already contains sand instructions");
+            println!("\nsand initialized successfully!");
             println!("The MCP server will now auto-detect this project.");
             return Ok(());
         }
         Some(local_claude_md)
     } else if use_global {
         if global_has_instructions {
-            println!("Global CLAUDE.md already contains Sediment instructions");
-            println!("\nSediment initialized successfully!");
+            println!("Global CLAUDE.md already contains sand instructions");
+            println!("\nsand initialized successfully!");
             println!("The MCP server will now auto-detect this project.");
             return Ok(());
         }
@@ -370,7 +370,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
         let default_idx = if local_has_instructions { 1 } else { 0 };
 
         let selection = Select::new()
-            .with_prompt("Where should Sediment instructions be added?")
+            .with_prompt("Where should sand instructions be added?")
             .items(options)
             .default(default_idx)
             .interact()?;
@@ -378,7 +378,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
         match selection {
             0 => {
                 if local_has_instructions {
-                    println!("Local CLAUDE.md already contains Sediment instructions");
+                    println!("Local CLAUDE.md already contains sand instructions");
                     None
                 } else {
                     Some(local_claude_md)
@@ -386,7 +386,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
             }
             1 => {
                 if global_has_instructions {
-                    println!("Global CLAUDE.md already contains Sediment instructions");
+                    println!("Global CLAUDE.md already contains sand instructions");
                     None
                 } else {
                     Some(global_claude_md)
@@ -397,7 +397,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
     };
 
     let Some(claude_md_path) = claude_md_path else {
-        println!("\nSediment initialized successfully!");
+        println!("\nsand initialized successfully!");
         println!("The MCP server will now auto-detect this project.");
         return Ok(());
     };
@@ -418,7 +418,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
             true
         } else {
             Confirm::new()
-                .with_prompt("CLAUDE.md exists. Append Sediment instructions?")
+                .with_prompt("CLAUDE.md exists. Append sand instructions?")
                 .default(true)
                 .interact()?
         };
@@ -435,7 +435,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
         println!("Created: {}", claude_md_path.display());
     }
 
-    println!("\nSediment initialized successfully!");
+    println!("\nsand initialized successfully!");
     println!("The MCP server will now auto-detect this project.");
 
     Ok(())
@@ -443,7 +443,7 @@ fn run_init(use_local: bool, use_global: bool) -> Result<()> {
 
 /// Show database statistics
 fn run_stats(db_override: Option<PathBuf>) -> Result<()> {
-    let db_path = db_override.unwrap_or_else(sediment::central_db_path);
+    let db_path = db_override.unwrap_or_else(sand::central_db_path);
 
     println!("Database: {}", db_path.display());
 
@@ -455,7 +455,7 @@ fn run_stats(db_override: Option<PathBuf>) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let db = sediment::Database::open(&db_path).await?;
+        let db = sand::Database::open(&db_path).await?;
         let stats = db.stats().await?;
 
         println!("\nStatistics:");
@@ -475,22 +475,22 @@ struct CliContext {
 
 /// Build CLI context: resolve DB path, detect project, derive project ID.
 fn cli_context(db_override: Option<PathBuf>) -> CliContext {
-    let db_path = db_override.unwrap_or_else(sediment::central_db_path);
-    let sediment_dir = db_path.parent().unwrap_or(&db_path);
-    let access_db_path = sediment_dir.join("access.db");
+    let db_path = db_override.unwrap_or_else(sand::central_db_path);
+    let sand_dir = db_path.parent().unwrap_or(&db_path);
+    let access_db_path = sand_dir.join("access.db");
 
     // a caller that resolved the project earlier can act on it after the
     // project directory is gone; an empty value forces global context
-    let project_id = match std::env::var("SEDIMENT_PROJECT_ID") {
+    let project_id = match std::env::var("SAND_PROJECT_ID") {
         Ok(id) => Some(id).filter(|id| !id.is_empty()),
         Err(_) => {
             let cwd = std::env::current_dir().ok();
             let project_root = cwd
                 .as_deref()
-                .map(|dir| sediment::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
+                .map(|dir| sand::find_project_root(dir).unwrap_or_else(|| dir.to_path_buf()));
             project_root
                 .as_ref()
-                .and_then(|root| sediment::get_or_create_project_id(root).ok())
+                .and_then(|root| sand::get_or_create_project_id(root).ok())
         }
     };
 
@@ -531,12 +531,12 @@ fn run_list(
     }
 
     let scope = scope
-        .parse::<sediment::ListScope>()
+        .parse::<sand::ListScope>()
         .map_err(|e| anyhow::anyhow!(e))?;
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let mut db = sediment::Database::open_with_project(&ctx.db_path, ctx.project_id).await?;
+        let mut db = sand::Database::open_with_project(&ctx.db_path, ctx.project_id).await?;
         let items = db.list_items(Some(limit), scope).await?;
 
         if output_json {
@@ -628,18 +628,18 @@ fn run_store(
     }
 
     let scope = scope
-        .parse::<sediment::StoreScope>()
+        .parse::<sand::StoreScope>()
         .map_err(|e| anyhow::anyhow!(e))?;
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let mut db =
-            sediment::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
+            sand::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
 
-        let mut item = sediment::Item::new(&content);
+        let mut item = sand::Item::new(&content);
 
         // Set project_id based on scope
-        if scope == sediment::StoreScope::Project
+        if scope == sand::StoreScope::Project
             && let Some(ref project_id) = ctx.project_id
         {
             item = item.with_project_id(project_id);
@@ -649,7 +649,7 @@ fn run_store(
         let new_id = store_result.id.clone();
 
         // Create graph node
-        let graph = sediment::graph::GraphStore::open(&ctx.access_db_path)?;
+        let graph = sand::graph::GraphStore::open(&ctx.access_db_path)?;
         let now = chrono::Utc::now().timestamp();
         if let Err(e) = graph.add_node(&new_id, ctx.project_id.as_deref(), now) {
             tracing::warn!("graph add_node failed: {}", e);
@@ -658,7 +658,7 @@ fn run_store(
         // Enqueue consolidation candidates from conflicts
         if !store_result.potential_conflicts.is_empty()
             && let Ok(queue) =
-                sediment::consolidation::ConsolidationQueue::open(&ctx.access_db_path)
+                sand::consolidation::ConsolidationQueue::open(&ctx.access_db_path)
         {
             for conflict in &store_result.potential_conflicts {
                 if let Err(e) =
@@ -672,7 +672,7 @@ fn run_store(
         // Handle replace: delete old item, preserve graph lineage
         let mut replaced = false;
         if let Some(ref old_id) = replace {
-            if !sediment::db::is_valid_id(old_id) {
+            if !sand::db::is_valid_id(old_id) {
                 tracing::warn!("replace ID is not valid: {}", old_id);
             } else {
                 if let Err(e) = graph.add_supersedes_edge(&new_id, old_id) {
@@ -684,7 +684,7 @@ fn run_store(
 
                 // Record validation on the new item
                 if let Ok(tracker) =
-                    sediment::access::AccessTracker::open(&ctx.access_db_path)
+                    sand::access::AccessTracker::open(&ctx.access_db_path)
                 {
                     let created_at = chrono::Utc::now().timestamp();
                     if let Err(e) = tracker.record_validation(&new_id, created_at) {
@@ -769,18 +769,18 @@ fn run_recall(
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let mut db =
-            sediment::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
+            sand::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
 
-        let tracker = sediment::access::AccessTracker::open(&ctx.access_db_path)?;
-        let graph = sediment::graph::GraphStore::open(&ctx.access_db_path)?;
+        let tracker = sand::access::AccessTracker::open(&ctx.access_db_path)?;
+        let graph = sand::graph::GraphStore::open(&ctx.access_db_path)?;
 
-        let filters = sediment::ItemFilters::new();
-        let config = sediment::mcp::tools::RecallConfig {
+        let filters = sand::ItemFilters::new();
+        let config = sand::mcp::tools::RecallConfig {
             enable_background_tasks: false,
             ..Default::default()
         };
 
-        let recall_result = sediment::mcp::tools::recall_pipeline(
+        let recall_result = sand::mcp::tools::recall_pipeline(
             &mut db, &tracker, &graph, query, limit, filters, &config,
         )
         .await
@@ -932,8 +932,7 @@ fn run_forget(db_override: Option<PathBuf>, id: &str, output_json: bool) -> Resu
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let db =
-            sediment::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
+        let db = sand::Database::open_with_project(&ctx.db_path, ctx.project_id.clone()).await?;
 
         // Access control: verify the item belongs to the current project or is global
         if let Some(ref current_pid) = ctx.project_id {
@@ -953,7 +952,7 @@ fn run_forget(db_override: Option<PathBuf>, id: &str, output_json: bool) -> Resu
         match db.delete_item(id).await {
             Ok(true) => {
                 // Remove from graph
-                let graph = sediment::graph::GraphStore::open(&ctx.access_db_path)?;
+                let graph = sand::graph::GraphStore::open(&ctx.access_db_path)?;
                 if let Err(e) = graph.remove_node(id) {
                     tracing::warn!("remove_node failed: {}", e);
                 }
@@ -980,7 +979,7 @@ fn run_forget(db_override: Option<PathBuf>, id: &str, output_json: bool) -> Resu
 
 /// Compact and optimize LanceDB storage
 fn run_compact(db_override: Option<PathBuf>, force: bool, no_prune: bool) -> Result<()> {
-    let db_path = db_override.unwrap_or_else(sediment::central_db_path);
+    let db_path = db_override.unwrap_or_else(sand::central_db_path);
 
     if !db_path.exists() {
         println!("Database does not exist yet. Nothing to compact.");
@@ -989,10 +988,10 @@ fn run_compact(db_override: Option<PathBuf>, force: bool, no_prune: bool) -> Res
 
     println!("Database: {}", db_path.display());
 
-    let size_before = sediment::db::dir_size(&db_path);
+    let size_before = sand::db::dir_size(&db_path);
     println!("Size before: {}", format_bytes(size_before));
 
-    let config = sediment::db::CompactConfig {
+    let config = sand::db::CompactConfig {
         prune_older_than: if no_prune {
             None
         } else {
@@ -1005,10 +1004,10 @@ fn run_compact(db_override: Option<PathBuf>, force: bool, no_prune: bool) -> Res
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let db = sediment::Database::open(&db_path).await?;
+        let db = sand::Database::open(&db_path).await?;
         let stats = db.optimize_tables(&config).await?;
 
-        let size_after = sediment::db::dir_size(&db_path);
+        let size_after = sand::db::dir_size(&db_path);
 
         println!("\nOptimization results:");
         println!(
@@ -1067,11 +1066,11 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Generate CLAUDE.md instructions for Sediment
+/// Generate CLAUDE.md instructions for sand
 fn generate_claude_md_instructions() -> String {
-    r#"# Sediment Memory System
+    r#"# sand Memory System
 
-Use `mcp__sediment__store`, `mcp__sediment__recall`, `mcp__sediment__list`, and `mcp__sediment__forget` for persistent memory.
+Use `mcp__sand__store`, `mcp__sand__recall`, `mcp__sand__list`, and `mcp__sand__forget` for persistent memory.
 
 ## Proactive Usage
 

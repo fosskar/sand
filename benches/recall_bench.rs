@@ -11,12 +11,12 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tempfile::TempDir;
 
-use sediment::access::AccessTracker;
-use sediment::db::Database;
-use sediment::embedder::Embedder;
-use sediment::graph::GraphStore;
-use sediment::item::{Item, ItemFilters};
-use sediment::mcp::{RecallConfig, recall_pipeline};
+use sand::access::AccessTracker;
+use sand::db::Database;
+use sand::embedder::Embedder;
+use sand::graph::GraphStore;
+use sand::item::{Item, ItemFilters};
+use sand::mcp::{RecallConfig, recall_pipeline};
 
 const SHORT_TEXTS: &[&str] = &[
     "User prefers dark mode for all editors",

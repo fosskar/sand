@@ -1,6 +1,6 @@
 [package]
-name = "sediment-mcp"
-version = "0.5.1"
+name = "sand"
+version = "0.6.0"
 edition = "2024"
 repository = "https://github.com/fosskar/sand"
 homepage = "https://github.com/fosskar/sand"
@@ -12,11 +12,11 @@ keywords = ["mcp", "memory", "semantic-search", "ai-agent", "embeddings"]
 categories = ["command-line-utilities", "database"]
 
 [lib]
-name = "sediment"
+name = "sand"
 path = "src/lib.rs"
 
 [[bin]]
-name = "sediment"
+name = "sand"
 path = "src/main.rs"
 
 [dependencies]

@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// A unified item stored in Sediment
+/// A unified item stored in sand
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     /// Unique identifier (UUID)

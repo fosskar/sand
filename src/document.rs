@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-use crate::error::{Result, SedimentError};
+use crate::error::{Result, SandError};
 
 /// Content type of content (used for smart chunking)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -37,7 +37,7 @@ impl ContentType {
 }
 
 impl FromStr for ContentType {
-    type Err = SedimentError;
+    type Err = SandError;
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
@@ -46,7 +46,7 @@ impl FromStr for ContentType {
             "json" => Ok(ContentType::Json),
             "yaml" | "yml" => Ok(ContentType::Yaml),
             "code" => Ok(ContentType::Code),
-            _ => Err(SedimentError::InvalidContentType(s.to_string())),
+            _ => Err(SandError::InvalidContentType(s.to_string())),
         }
     }
 }

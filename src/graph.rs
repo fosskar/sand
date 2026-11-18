@@ -8,7 +8,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 use tracing::debug;
 
-use crate::error::{Result, SedimentError};
+use crate::error::{Result, SandError};
 
 /// SQLite-backed graph store for memory relationships.
 pub struct GraphStore {
@@ -19,9 +19,8 @@ impl GraphStore {
     /// Open or create the graph store using the given SQLite database path.
     /// Shares the same file as access.db.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).map_err(|e| {
-            SedimentError::Database(format!("Failed to open graph database: {}", e))
-        })?;
+        let conn = Connection::open(path)
+            .map_err(|e| SandError::Database(format!("Failed to open graph database: {}", e)))?;
 
         if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
             tracing::warn!("Failed to set SQLite PRAGMAs (graph): {}", e);
@@ -49,7 +48,7 @@ impl GraphStore {
             CREATE INDEX IF NOT EXISTS idx_edges_from ON graph_edges(from_id, edge_type);
             CREATE INDEX IF NOT EXISTS idx_edges_to ON graph_edges(to_id, edge_type);",
         )
-        .map_err(|e| SedimentError::Database(format!("Failed to create graph tables: {}", e)))?;
+        .map_err(|e| SandError::Database(format!("Failed to create graph tables: {}", e)))?;
 
         Ok(Self { conn })
     }
@@ -63,7 +62,7 @@ impl GraphStore {
                 "INSERT OR IGNORE INTO graph_nodes (id, project_id, created_at) VALUES (?1, ?2, ?3)",
                 params![id, pid, created_at],
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to add node: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to add node: {}", e)))?;
 
         debug!("Added graph node: {}", id);
         Ok(())
@@ -78,11 +77,11 @@ impl GraphStore {
                 "DELETE FROM graph_edges WHERE from_id = ?1 OR (to_id = ?1 AND edge_type != 'supersedes')",
                 params![id],
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to remove edges: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to remove edges: {}", e)))?;
 
         self.conn
             .execute("DELETE FROM graph_nodes WHERE id = ?1", params![id])
-            .map_err(|e| SedimentError::Database(format!("Failed to remove node: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to remove node: {}", e)))?;
 
         debug!("Removed graph node: {}", id);
         Ok(())
@@ -104,7 +103,7 @@ impl GraphStore {
                  VALUES (?1, ?2, 'related', ?3, ?4, ?5)",
                 params![from_id, to_id, strength, rel_type, now],
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to add related edge: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to add related edge: {}", e)))?;
 
         debug!(
             "Added RELATED edge: {} -> {} ({})",
@@ -123,7 +122,7 @@ impl GraphStore {
                  VALUES (?1, ?2, 'supersedes', 1.0, ?3)",
                 params![new_id, old_id, now],
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to add supersedes edge: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to add supersedes edge: {}", e)))?;
 
         debug!("Added SUPERSEDES edge: {} -> {}", new_id, old_id);
         Ok(())
@@ -161,7 +160,7 @@ impl GraphStore {
         );
 
         let mut stmt = self.conn.prepare(&sql).map_err(|e| {
-            SedimentError::Database(format!("Failed to prepare neighbors query: {}", e))
+            SandError::Database(format!("Failed to prepare neighbors query: {}", e))
         })?;
 
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -181,14 +180,14 @@ impl GraphStore {
                     row.get::<_, f64>(2)?,
                 ))
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to query neighbors: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to query neighbors: {}", e)))?;
 
         // Filter out input IDs from results so we never return a query ID as its own neighbor
         let input_set: std::collections::HashSet<&str> = ids.iter().copied().collect();
         let mut results = Vec::new();
         for row in rows {
-            let r = row
-                .map_err(|e| SedimentError::Database(format!("Failed to read neighbor: {}", e)))?;
+            let r =
+                row.map_err(|e| SandError::Database(format!("Failed to read neighbor: {}", e)))?;
             if !input_set.contains(r.0.as_str()) {
                 results.push(r);
             }
@@ -234,7 +233,7 @@ impl GraphStore {
                         params![a, b, now],
                     )
                     .map_err(|e| {
-                        SedimentError::Database(format!("Failed to record co-access: {}", e))
+                        SandError::Database(format!("Failed to record co-access: {}", e))
                     })?;
             }
         }
@@ -266,7 +265,7 @@ impl GraphStore {
         );
 
         let mut stmt = self.conn.prepare(&sql).map_err(|e| {
-            SedimentError::Database(format!("Failed to prepare co-access query: {}", e))
+            SandError::Database(format!("Failed to prepare co-access query: {}", e))
         })?;
 
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -282,12 +281,12 @@ impl GraphStore {
             .query_map(params_ref.as_slice(), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to query co-access: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to query co-access: {}", e)))?;
 
         let mut results = Vec::new();
         for row in rows {
-            let r = row
-                .map_err(|e| SedimentError::Database(format!("Failed to read co-access: {}", e)))?;
+            let r =
+                row.map_err(|e| SandError::Database(format!("Failed to read co-access: {}", e)))?;
             results.push(r);
         }
 
@@ -311,9 +310,7 @@ impl GraphStore {
                AND edge_type = 'related'
                AND from_id != ?2 AND to_id != ?2",
             )
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to prepare transfer query: {}", e))
-            })?;
+            .map_err(|e| SandError::Database(format!("Failed to prepare transfer query: {}", e)))?;
 
         let edges: Vec<(String, f64, String, i64)> = stmt
             .query_map(params![from_id, to_id], |row| {
@@ -322,9 +319,7 @@ impl GraphStore {
                 let neighbor = if fid == from_id { tid } else { fid };
                 Ok((neighbor, row.get(2)?, row.get(3)?, row.get(4)?))
             })
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to query edges for transfer: {}", e))
-            })?
+            .map_err(|e| SandError::Database(format!("Failed to query edges for transfer: {}", e)))?
             .filter_map(|r| match r {
                 Ok(v) => Some(v),
                 Err(e) => {
@@ -362,7 +357,7 @@ impl GraphStore {
             WHERE e1.a < e1.b AND e1.b < e2.b
             LIMIT 50",
             )
-            .map_err(|e| SedimentError::Database(format!("Failed to detect clusters: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to detect clusters: {}", e)))?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -372,7 +367,7 @@ impl GraphStore {
                     row.get::<_, String>(2)?,
                 ))
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to read clusters: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to read clusters: {}", e)))?;
 
         let mut clusters = Vec::new();
         for r in rows.flatten() {
@@ -412,7 +407,7 @@ impl GraphStore {
         );
 
         let mut stmt = self.conn.prepare(&sql).map_err(|e| {
-            SedimentError::Database(format!("Failed to prepare neighbors_mapped query: {}", e))
+            SandError::Database(format!("Failed to prepare neighbors_mapped query: {}", e))
         })?;
 
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -428,9 +423,7 @@ impl GraphStore {
             .query_map(params_ref.as_slice(), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to query neighbors_mapped: {}", e))
-            })?;
+            .map_err(|e| SandError::Database(format!("Failed to query neighbors_mapped: {}", e)))?;
 
         let input_set: std::collections::HashSet<&str> = ids.iter().copied().collect();
         let mut map: std::collections::HashMap<String, Vec<String>> =
@@ -438,7 +431,7 @@ impl GraphStore {
 
         for row in rows {
             let (source, neighbor) = row.map_err(|e| {
-                SedimentError::Database(format!("Failed to read neighbor_mapped: {}", e))
+                SandError::Database(format!("Failed to read neighbor_mapped: {}", e))
             })?;
             if !input_set.contains(neighbor.as_str()) {
                 map.entry(source).or_default().push(neighbor);
@@ -476,7 +469,7 @@ impl GraphStore {
         );
 
         let mut stmt = self.conn.prepare(&sql).map_err(|e| {
-            SedimentError::Database(format!("Failed to prepare edge_counts query: {}", e))
+            SandError::Database(format!("Failed to prepare edge_counts query: {}", e))
         })?;
 
         let params: Vec<&dyn rusqlite::types::ToSql> = ids
@@ -488,13 +481,12 @@ impl GraphStore {
             .query_map(params.as_slice(), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
             })
-            .map_err(|e| SedimentError::Database(format!("Failed to query edge_counts: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to query edge_counts: {}", e)))?;
 
         let mut map = std::collections::HashMap::new();
         for row in rows {
-            let (id, count) = row.map_err(|e| {
-                SedimentError::Database(format!("Failed to read edge_count: {}", e))
-            })?;
+            let (id, count) =
+                row.map_err(|e| SandError::Database(format!("Failed to read edge_count: {}", e)))?;
             map.insert(id, count);
         }
 
@@ -511,9 +503,7 @@ impl GraphStore {
                 "UPDATE graph_nodes SET project_id = ?1 WHERE project_id = ?2",
                 params![new_id, old_id],
             )
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to migrate graph nodes: {}", e))
-            })?;
+            .map_err(|e| SandError::Database(format!("Failed to migrate graph nodes: {}", e)))?;
 
         if updated > 0 {
             debug!(
@@ -550,7 +540,7 @@ mod tests {
                  FROM graph_edges WHERE from_id = ?1 OR to_id = ?1",
                 )
                 .map_err(|e| {
-                    SedimentError::Database(format!("Failed to prepare connections query: {}", e))
+                    SandError::Database(format!("Failed to prepare connections query: {}", e))
                 })?;
 
             let rows = stmt
@@ -577,14 +567,12 @@ mod tests {
                         },
                     })
                 })
-                .map_err(|e| {
-                    SedimentError::Database(format!("Failed to query connections: {}", e))
-                })?;
+                .map_err(|e| SandError::Database(format!("Failed to query connections: {}", e)))?;
 
             let mut connections = Vec::new();
             for row in rows {
                 let r = row.map_err(|e| {
-                    SedimentError::Database(format!("Failed to read connection: {}", e))
+                    SandError::Database(format!("Failed to read connection: {}", e))
                 })?;
                 connections.push(r);
             }
@@ -599,7 +587,7 @@ mod tests {
                     params![item_id],
                     |row| row.get(0),
                 )
-                .map_err(|e| SedimentError::Database(format!("Failed to count edges: {}", e)))?;
+                .map_err(|e| SandError::Database(format!("Failed to count edges: {}", e)))?;
             Ok(count as u32)
         }
     }

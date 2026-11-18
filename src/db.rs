@@ -49,7 +49,7 @@ use crate::boost_similarity;
 use crate::chunker::{ChunkingConfig, chunk_content};
 use crate::document::ContentType;
 use crate::embedder::Embedder;
-use crate::error::{Result, SedimentError};
+use crate::error::{Result, SandError};
 use crate::item::{Chunk, ConflictInfo, Item, ItemFilters, SearchResult, StoreResult};
 
 /// Threshold for auto-chunking (in characters)
@@ -182,26 +182,26 @@ impl Database {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                SedimentError::Database(format!("Failed to create database directory: {}", e))
+                SandError::Database(format!("Failed to create database directory: {}", e))
             })?;
         }
 
         let db = connect(path.to_str().ok_or_else(|| {
-            SedimentError::Database("Database path contains invalid UTF-8".to_string())
+            SandError::Database("Database path contains invalid UTF-8".to_string())
         })?)
         .execute()
         .await
-        .map_err(|e| SedimentError::Database(format!("Failed to connect to database: {}", e)))?;
+        .map_err(|e| SandError::Database(format!("Failed to connect to database: {}", e)))?;
 
         // In bench builds, allow overriding FTS params via environment variables
         // for parameter sweeps. Production builds always use the compiled defaults.
         #[cfg(feature = "bench")]
         let (fts_boost_max, fts_gamma) = {
-            let boost = std::env::var("SEDIMENT_FTS_BOOST_MAX")
+            let boost = std::env::var("SAND_FTS_BOOST_MAX")
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
                 .unwrap_or(FTS_BOOST_MAX);
-            let gamma = std::env::var("SEDIMENT_FTS_GAMMA")
+            let gamma = std::env::var("SAND_FTS_GAMMA")
                 .ok()
                 .and_then(|v| v.parse::<f32>().ok())
                 .unwrap_or(FTS_GAMMA);
@@ -244,17 +244,19 @@ impl Database {
             .table_names()
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to list tables: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to list tables: {}", e)))?;
 
         // Recover from interrupted migration if staging table exists
         if table_names.contains(&"items_migrated".to_string()) {
             info!("Detected interrupted migration, recovering...");
             self.recover_interrupted_migration(&table_names).await?;
             // Re-fetch table names after recovery
-            table_names =
-                self.db.table_names().execute().await.map_err(|e| {
-                    SedimentError::Database(format!("Failed to list tables: {}", e))
-                })?;
+            table_names = self
+                .db
+                .table_names()
+                .execute()
+                .await
+                .map_err(|e| SandError::Database(format!("Failed to list tables: {}", e)))?;
         }
 
         // Check if migration is needed (items table exists but has old schema)
@@ -268,18 +270,23 @@ impl Database {
 
         // Items table
         if table_names.contains(&"items".to_string()) {
-            self.items_table =
-                Some(self.db.open_table("items").execute().await.map_err(|e| {
-                    SedimentError::Database(format!("Failed to open items: {}", e))
-                })?);
+            self.items_table = Some(
+                self.db
+                    .open_table("items")
+                    .execute()
+                    .await
+                    .map_err(|e| SandError::Database(format!("Failed to open items: {}", e)))?,
+            );
         }
 
         // Chunks table
         if table_names.contains(&"chunks".to_string()) {
             self.chunks_table =
-                Some(self.db.open_table("chunks").execute().await.map_err(|e| {
-                    SedimentError::Database(format!("Failed to open chunks: {}", e))
-                })?);
+                Some(
+                    self.db.open_table("chunks").execute().await.map_err(|e| {
+                        SandError::Database(format!("Failed to open chunks: {}", e))
+                    })?,
+                );
         }
 
         Ok(())
@@ -287,14 +294,15 @@ impl Database {
 
     /// Check if the database needs migration by checking for old schema columns
     async fn check_needs_migration(&self) -> Result<bool> {
-        let table = self.db.open_table("items").execute().await.map_err(|e| {
-            SedimentError::Database(format!("Failed to open items for check: {}", e))
-        })?;
+        let table =
+            self.db.open_table("items").execute().await.map_err(|e| {
+                SandError::Database(format!("Failed to open items for check: {}", e))
+            })?;
 
         let schema = table
             .schema()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to get schema: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to get schema: {}", e)))?;
 
         // Old schema has 'tags' column, new schema doesn't
         let has_tags = schema.fields().iter().any(|f| f.name() == "tags");
@@ -322,18 +330,16 @@ impl Database {
                 .open_table("items_migrated")
                 .execute()
                 .await
-                .map_err(|e| {
-                    SedimentError::Database(format!("Failed to open staging table: {}", e))
-                })?;
+                .map_err(|e| SandError::Database(format!("Failed to open staging table: {}", e)))?;
 
             let results = staging
                 .query()
                 .execute()
                 .await
-                .map_err(|e| SedimentError::Database(format!("Recovery query failed: {}", e)))?
+                .map_err(|e| SandError::Database(format!("Recovery query failed: {}", e)))?
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|e| SedimentError::Database(format!("Recovery collect failed: {}", e)))?;
+                .map_err(|e| SandError::Database(format!("Recovery collect failed: {}", e)))?;
 
             let dim = self.embedder.dimension();
             let schema = Arc::new(item_schema(dim));
@@ -342,9 +348,7 @@ impl Database {
                 .create_empty_table("items", schema.clone())
                 .execute()
                 .await
-                .map_err(|e| {
-                    SedimentError::Database(format!("Failed to create items table: {}", e))
-                })?;
+                .map_err(|e| SandError::Database(format!("Failed to create items table: {}", e)))?;
 
             if !results.is_empty() {
                 let batches = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
@@ -352,14 +356,13 @@ impl Database {
                     .add(Box::new(batches))
                     .execute()
                     .await
-                    .map_err(|e| {
-                        SedimentError::Database(format!("Failed to restore items: {}", e))
-                    })?;
+                    .map_err(|e| SandError::Database(format!("Failed to restore items: {}", e)))?;
             }
 
-            self.db.drop_table("items_migrated").await.map_err(|e| {
-                SedimentError::Database(format!("Failed to drop staging table: {}", e))
-            })?;
+            self.db
+                .drop_table("items_migrated")
+                .await
+                .map_err(|e| SandError::Database(format!("Failed to drop staging table: {}", e)))?;
             info!("Recovery case A completed");
         } else {
             // Both exist — check if items has old or new schema
@@ -369,14 +372,14 @@ impl Database {
                 // Case B: migration never completed, old data intact. Drop staging.
                 info!("Recovery case B: dropping incomplete staging table");
                 self.db.drop_table("items_migrated").await.map_err(|e| {
-                    SedimentError::Database(format!("Failed to drop staging table: {}", e))
+                    SandError::Database(format!("Failed to drop staging table: {}", e))
                 })?;
                 // Migration will re-run in ensure_tables
             } else {
                 // Case C: migration completed, just cleanup staging
                 info!("Recovery case C: dropping leftover staging table");
                 self.db.drop_table("items_migrated").await.map_err(|e| {
-                    SedimentError::Database(format!("Failed to drop staging table: {}", e))
+                    SandError::Database(format!("Failed to drop staging table: {}", e))
                 })?;
             }
         }
@@ -406,16 +409,16 @@ impl Database {
             .open_table("items")
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to open old items: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to open old items: {}", e)))?;
 
         let results = old_table
             .query()
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Migration query failed: {}", e)))?
+            .map_err(|e| SandError::Database(format!("Migration query failed: {}", e)))?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| SedimentError::Database(format!("Migration collect failed: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Migration collect failed: {}", e)))?;
 
         // Step 2: Convert to new format
         let mut new_batches = Vec::new();
@@ -428,7 +431,7 @@ impl Database {
         let old_count: usize = results.iter().map(|b| b.num_rows()).sum();
         let new_count: usize = new_batches.iter().map(|b| b.num_rows()).sum();
         if old_count != new_count {
-            return Err(SedimentError::Database(format!(
+            return Err(SandError::Database(format!(
                 "Migration row count mismatch: old={}, new={}",
                 old_count, new_count
             )));
@@ -441,11 +444,12 @@ impl Database {
             .table_names()
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to list tables: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to list tables: {}", e)))?;
         if table_names.contains(&"items_migrated".to_string()) {
-            self.db.drop_table("items_migrated").await.map_err(|e| {
-                SedimentError::Database(format!("Failed to drop stale staging: {}", e))
-            })?;
+            self.db
+                .drop_table("items_migrated")
+                .await
+                .map_err(|e| SandError::Database(format!("Failed to drop stale staging: {}", e)))?;
         }
 
         // Step 5: Create staging table with migrated data
@@ -456,9 +460,7 @@ impl Database {
             .create_empty_table("items_migrated", schema.clone())
             .execute()
             .await
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to create staging table: {}", e))
-            })?;
+            .map_err(|e| SandError::Database(format!("Failed to create staging table: {}", e)))?;
 
         if !new_batches.is_empty() {
             let batches = RecordBatchIterator::new(new_batches.into_iter().map(Ok), schema.clone());
@@ -467,7 +469,7 @@ impl Database {
                 .execute()
                 .await
                 .map_err(|e| {
-                    SedimentError::Database(format!("Failed to insert into staging: {}", e))
+                    SandError::Database(format!("Failed to insert into staging: {}", e))
                 })?;
         }
 
@@ -475,39 +477,38 @@ impl Database {
         let staging_count = staging_table
             .count_rows(None)
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to count staging rows: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to count staging rows: {}", e)))?;
         if staging_count != old_count {
             // Staging is incomplete — drop it and bail
             let _ = self.db.drop_table("items_migrated").await;
-            return Err(SedimentError::Database(format!(
+            return Err(SandError::Database(format!(
                 "Staging row count mismatch: expected {}, got {}",
                 old_count, staging_count
             )));
         }
 
         // Step 7: Drop old items (data is safe in staging)
-        self.db.drop_table("items").await.map_err(|e| {
-            SedimentError::Database(format!("Failed to drop old items table: {}", e))
-        })?;
+        self.db
+            .drop_table("items")
+            .await
+            .map_err(|e| SandError::Database(format!("Failed to drop old items table: {}", e)))?;
 
         // Step 8: Create new items from staging data
         let staging_data = staging_table
             .query()
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to read staging: {}", e)))?
+            .map_err(|e| SandError::Database(format!("Failed to read staging: {}", e)))?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to collect staging: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to collect staging: {}", e)))?;
 
         let new_table = self
             .db
             .create_empty_table("items", schema.clone())
             .execute()
             .await
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to create new items table: {}", e))
-            })?;
+            .map_err(|e| SandError::Database(format!("Failed to create new items table: {}", e)))?;
 
         if !staging_data.is_empty() {
             let batches = RecordBatchIterator::new(staging_data.into_iter().map(Ok), schema);
@@ -516,7 +517,7 @@ impl Database {
                 .execute()
                 .await
                 .map_err(|e| {
-                    SedimentError::Database(format!("Failed to insert migrated items: {}", e))
+                    SandError::Database(format!("Failed to insert migrated items: {}", e))
                 })?;
         }
 
@@ -524,7 +525,7 @@ impl Database {
         self.db
             .drop_table("items_migrated")
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to drop staging table: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to drop staging table: {}", e)))?;
 
         info!("Schema migration completed successfully");
         Ok(())
@@ -537,32 +538,32 @@ impl Database {
         // Extract columns from old batch (handle missing columns gracefully)
         let id_col = batch
             .column_by_name("id")
-            .ok_or_else(|| SedimentError::Database("Missing id column".to_string()))?
+            .ok_or_else(|| SandError::Database("Missing id column".to_string()))?
             .clone();
 
         let content_col = batch
             .column_by_name("content")
-            .ok_or_else(|| SedimentError::Database("Missing content column".to_string()))?
+            .ok_or_else(|| SandError::Database("Missing content column".to_string()))?
             .clone();
 
         let project_id_col = batch
             .column_by_name("project_id")
-            .ok_or_else(|| SedimentError::Database("Missing project_id column".to_string()))?
+            .ok_or_else(|| SandError::Database("Missing project_id column".to_string()))?
             .clone();
 
         let is_chunked_col = batch
             .column_by_name("is_chunked")
-            .ok_or_else(|| SedimentError::Database("Missing is_chunked column".to_string()))?
+            .ok_or_else(|| SandError::Database("Missing is_chunked column".to_string()))?
             .clone();
 
         let created_at_col = batch
             .column_by_name("created_at")
-            .ok_or_else(|| SedimentError::Database("Missing created_at column".to_string()))?
+            .ok_or_else(|| SandError::Database("Missing created_at column".to_string()))?
             .clone();
 
         let vector_col = batch
             .column_by_name("vector")
-            .ok_or_else(|| SedimentError::Database("Missing vector column".to_string()))?
+            .ok_or_else(|| SandError::Database("Missing vector column".to_string()))?
             .clone();
 
         RecordBatch::try_new(
@@ -576,7 +577,7 @@ impl Database {
                 vector_col,
             ],
         )
-        .map_err(|e| SedimentError::Database(format!("Failed to create migrated batch: {}", e)))
+        .map_err(|e| SandError::Database(format!("Failed to create migrated batch: {}", e)))
     }
 
     /// Ensure vector and FTS indexes exist on tables with enough rows.
@@ -653,9 +654,7 @@ impl Database {
                 .create_empty_table("items", schema)
                 .execute()
                 .await
-                .map_err(|e| {
-                    SedimentError::Database(format!("Failed to create items table: {}", e))
-                })?;
+                .map_err(|e| SandError::Database(format!("Failed to create items table: {}", e)))?;
             self.items_table = Some(table);
         }
         Ok(self.items_table.as_ref().unwrap())
@@ -671,7 +670,7 @@ impl Database {
                 .execute()
                 .await
                 .map_err(|e| {
-                    SedimentError::Database(format!("Failed to create chunks table: {}", e))
+                    SandError::Database(format!("Failed to create chunks table: {}", e))
                 })?;
             self.chunks_table = Some(table);
         }
@@ -707,7 +706,7 @@ impl Database {
             .add(Box::new(batches))
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to store item: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to store item: {}", e)))?;
 
         // If chunking is needed, create and store chunks with rollback on failure
         if should_chunk {
@@ -796,7 +795,7 @@ impl Database {
                 .add(Box::new(batches))
                 .execute()
                 .await
-                .map_err(|e| SedimentError::Database(format!("Failed to store chunks: {}", e)))?;
+                .map_err(|e| SandError::Database(format!("Failed to store chunks: {}", e)))?;
         }
 
         Ok(())
@@ -867,7 +866,7 @@ impl Database {
             let row_count = table.count_rows(None).await.unwrap_or(0);
             let base_query = table
                 .vector_search(query_embedding.clone())
-                .map_err(|e| SedimentError::Database(format!("Failed to build search: {}", e)))?;
+                .map_err(|e| SandError::Database(format!("Failed to build search: {}", e)))?;
             let query_builder = if row_count < VECTOR_INDEX_THRESHOLD {
                 base_query.bypass_vector_index().limit(limit * 2)
             } else {
@@ -877,12 +876,10 @@ impl Database {
             let results = query_builder
                 .execute()
                 .await
-                .map_err(|e| SedimentError::Database(format!("Search failed: {}", e)))?
+                .map_err(|e| SandError::Database(format!("Search failed: {}", e)))?
                 .try_collect::<Vec<_>>()
                 .await
-                .map_err(|e| {
-                    SedimentError::Database(format!("Failed to collect results: {}", e))
-                })?;
+                .map_err(|e| SandError::Database(format!("Failed to collect results: {}", e)))?;
 
             // Collect vector search results with similarity scores
             let mut vector_items: Vec<(Item, f32)> = Vec::new();
@@ -938,9 +935,9 @@ impl Database {
         // Search chunks table (for chunked items)
         if let Some(chunks_table) = &self.chunks_table {
             let chunk_row_count = chunks_table.count_rows(None).await.unwrap_or(0);
-            let chunk_base_query = chunks_table.vector_search(query_embedding).map_err(|e| {
-                SedimentError::Database(format!("Failed to build chunk search: {}", e))
-            })?;
+            let chunk_base_query = chunks_table
+                .vector_search(query_embedding)
+                .map_err(|e| SandError::Database(format!("Failed to build chunk search: {}", e)))?;
             let chunk_results = if chunk_row_count < VECTOR_INDEX_THRESHOLD {
                 chunk_base_query.bypass_vector_index().limit(limit * 3)
             } else {
@@ -948,12 +945,10 @@ impl Database {
             }
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Chunk search failed: {}", e)))?
+            .map_err(|e| SandError::Database(format!("Chunk search failed: {}", e)))?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| {
-                SedimentError::Database(format!("Failed to collect chunk results: {}", e))
-            })?;
+            .map_err(|e| SandError::Database(format!("Failed to collect chunk results: {}", e)))?;
 
             // Group chunks by item and find best chunk for each item
             let mut chunk_matches: std::collections::HashMap<String, (String, f32)> =
@@ -1067,7 +1062,7 @@ impl Database {
         let row_count = table.count_rows(None).await.unwrap_or(0);
         let base_query = table
             .vector_search(embedding.to_vec())
-            .map_err(|e| SedimentError::Database(format!("Failed to build search: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to build search: {}", e)))?;
         let results = if row_count < VECTOR_INDEX_THRESHOLD {
             base_query.bypass_vector_index().limit(limit)
         } else {
@@ -1075,10 +1070,10 @@ impl Database {
         }
         .execute()
         .await
-        .map_err(|e| SedimentError::Database(format!("Search failed: {}", e)))?
+        .map_err(|e| SandError::Database(format!("Search failed: {}", e)))?
         .try_collect::<Vec<_>>()
         .await
-        .map_err(|e| SedimentError::Database(format!("Failed to collect results: {}", e)))?;
+        .map_err(|e| SandError::Database(format!("Failed to collect results: {}", e)))?;
 
         let mut conflicts = Vec::new();
 
@@ -1134,7 +1129,7 @@ impl Database {
             crate::ListScope::Project => {
                 if let Some(ref pid) = self.project_id {
                     if !is_valid_id(pid) {
-                        return Err(SedimentError::Database(
+                        return Err(SandError::Database(
                             "Invalid project_id for list filter".to_string(),
                         ));
                     }
@@ -1166,10 +1161,10 @@ impl Database {
         let results = query
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Query failed: {}", e)))?
+            .map_err(|e| SandError::Database(format!("Query failed: {}", e)))?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to collect: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to collect: {}", e)))?;
 
         let mut items = Vec::new();
         for batch in results {
@@ -1195,10 +1190,10 @@ impl Database {
             .limit(1)
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Query failed: {}", e)))?
+            .map_err(|e| SandError::Database(format!("Query failed: {}", e)))?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to collect: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to collect: {}", e)))?;
 
         for batch in results {
             let items = batch_to_items(&batch)?;
@@ -1236,10 +1231,10 @@ impl Database {
             .only_if(filter)
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Batch query failed: {}", e)))?
+            .map_err(|e| SandError::Database(format!("Batch query failed: {}", e)))?
             .try_collect::<Vec<_>>()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to collect batch: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to collect batch: {}", e)))?;
 
         let mut items = Vec::new();
         for batch in results {
@@ -1272,7 +1267,7 @@ impl Database {
         table
             .delete(&format!("id = '{}'", sanitize_sql_string(id)))
             .await
-            .map_err(|e| SedimentError::Database(format!("Delete failed: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Delete failed: {}", e)))?;
 
         // Delete orphaned chunks (best-effort — orphaned chunks are benign
         // since they are only found via item_id join on the now-deleted item).
@@ -1295,14 +1290,14 @@ impl Database {
             stats.item_count = table
                 .count_rows(None)
                 .await
-                .map_err(|e| SedimentError::Database(format!("Count failed: {}", e)))?;
+                .map_err(|e| SandError::Database(format!("Count failed: {}", e)))?;
         }
 
         if let Some(table) = &self.chunks_table {
             stats.chunk_count = table
                 .count_rows(None)
                 .await
-                .map_err(|e| SedimentError::Database(format!("Count failed: {}", e)))?;
+                .map_err(|e| SandError::Database(format!("Count failed: {}", e)))?;
         }
 
         Ok(stats)
@@ -1458,31 +1453,33 @@ pub async fn migrate_project_id(
     new_id: &str,
 ) -> Result<u64> {
     if !is_valid_id(old_id) || !is_valid_id(new_id) {
-        return Err(SedimentError::Database(
+        return Err(SandError::Database(
             "Invalid project ID for migration".to_string(),
         ));
     }
 
-    let db = connect(db_path.to_str().ok_or_else(|| {
-        SedimentError::Database("Database path contains invalid UTF-8".to_string())
-    })?)
-    .execute()
-    .await
-    .map_err(|e| SedimentError::Database(format!("Failed to connect for migration: {}", e)))?;
+    let db =
+        connect(db_path.to_str().ok_or_else(|| {
+            SandError::Database("Database path contains invalid UTF-8".to_string())
+        })?)
+        .execute()
+        .await
+        .map_err(|e| SandError::Database(format!("Failed to connect for migration: {}", e)))?;
 
     let table_names = db
         .table_names()
         .execute()
         .await
-        .map_err(|e| SedimentError::Database(format!("Failed to list tables: {}", e)))?;
+        .map_err(|e| SandError::Database(format!("Failed to list tables: {}", e)))?;
 
     let mut total_updated = 0u64;
 
     if table_names.contains(&"items".to_string()) {
-        let table =
-            db.open_table("items").execute().await.map_err(|e| {
-                SedimentError::Database(format!("Failed to open items table: {}", e))
-            })?;
+        let table = db
+            .open_table("items")
+            .execute()
+            .await
+            .map_err(|e| SandError::Database(format!("Failed to open items table: {}", e)))?;
 
         let updated = table
             .update()
@@ -1490,7 +1487,7 @@ pub async fn migrate_project_id(
             .column("project_id", format!("'{}'", sanitize_sql_string(new_id)))
             .execute()
             .await
-            .map_err(|e| SedimentError::Database(format!("Failed to migrate items: {}", e)))?;
+            .map_err(|e| SandError::Database(format!("Failed to migrate items: {}", e)))?;
 
         total_updated += updated;
         info!(
@@ -1635,7 +1632,7 @@ fn item_to_batch(item: &Item) -> Result<RecordBatch> {
             Arc::new(vector),
         ],
     )
-    .map_err(|e| SedimentError::Database(format!("Failed to create batch: {}", e)))
+    .map_err(|e| SandError::Database(format!("Failed to create batch: {}", e)))
 }
 
 fn batch_to_items(batch: &RecordBatch) -> Result<Vec<Item>> {
@@ -1644,12 +1641,12 @@ fn batch_to_items(batch: &RecordBatch) -> Result<Vec<Item>> {
     let id_col = batch
         .column_by_name("id")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| SedimentError::Database("Missing id column".to_string()))?;
+        .ok_or_else(|| SandError::Database("Missing id column".to_string()))?;
 
     let content_col = batch
         .column_by_name("content")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| SedimentError::Database("Missing content column".to_string()))?;
+        .ok_or_else(|| SandError::Database("Missing content column".to_string()))?;
 
     let project_id_col = batch
         .column_by_name("project_id")
@@ -1736,7 +1733,7 @@ fn chunk_to_batch(chunk: &Chunk) -> Result<RecordBatch> {
             Arc::new(vector),
         ],
     )
-    .map_err(|e| SedimentError::Database(format!("Failed to create batch: {}", e)))
+    .map_err(|e| SandError::Database(format!("Failed to create batch: {}", e)))
 }
 
 fn batch_to_chunks(batch: &RecordBatch) -> Result<Vec<Chunk>> {
@@ -1745,22 +1742,22 @@ fn batch_to_chunks(batch: &RecordBatch) -> Result<Vec<Chunk>> {
     let id_col = batch
         .column_by_name("id")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| SedimentError::Database("Missing id column".to_string()))?;
+        .ok_or_else(|| SandError::Database("Missing id column".to_string()))?;
 
     let item_id_col = batch
         .column_by_name("item_id")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| SedimentError::Database("Missing item_id column".to_string()))?;
+        .ok_or_else(|| SandError::Database("Missing item_id column".to_string()))?;
 
     let chunk_index_col = batch
         .column_by_name("chunk_index")
         .and_then(|c| c.as_any().downcast_ref::<Int32Array>())
-        .ok_or_else(|| SedimentError::Database("Missing chunk_index column".to_string()))?;
+        .ok_or_else(|| SandError::Database("Missing chunk_index column".to_string()))?;
 
     let content_col = batch
         .column_by_name("content")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| SedimentError::Database("Missing content column".to_string()))?;
+        .ok_or_else(|| SandError::Database("Missing content column".to_string()))?;
 
     let context_col = batch
         .column_by_name("context")
@@ -1800,7 +1797,7 @@ fn create_embedding_array(embedding: &[f32]) -> Result<FixedSizeListArray> {
     let field = Arc::new(Field::new("item", DataType::Float32, true));
 
     FixedSizeListArray::try_new(field, dim as i32, Arc::new(values), None)
-        .map_err(|e| SedimentError::Database(format!("Failed to create vector: {}", e)))
+        .map_err(|e| SandError::Database(format!("Failed to create vector: {}", e)))
 }
 
 #[cfg(test)]
