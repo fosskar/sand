@@ -50,8 +50,6 @@ pub struct StoreRequest {
     pub scope: StoreScope,
     /// Item the new one replaces: its graph edges move to the new item, then it is deleted.
     pub replace_id: Option<String>,
-    /// Count a replacement as a validation of the new item; only the CLI does this.
-    pub record_validation: bool,
     /// Creation time in unix seconds; honoured only in builds with the `bench` feature.
     pub created_at: Option<i64>,
 }

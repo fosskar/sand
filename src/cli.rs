@@ -448,7 +448,6 @@ fn run_store(
                 content,
                 scope,
                 replace_id: replace,
-                record_validation: true,
                 created_at: None,
             })
             .await?;

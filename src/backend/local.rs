@@ -227,9 +227,8 @@ impl Backend for LocalBackend {
                     tracing::warn!("replace: transfer_edges failed: {}", e);
                 }
 
-                if request.record_validation
-                    && let Ok(tracker) = AccessTracker::open(&self.access_db_path)
-                {
+                // a replacement confirms the note, which raises its trust bonus in recall
+                if let Ok(tracker) = AccessTracker::open(&self.access_db_path) {
                     let created_at = chrono::Utc::now().timestamp();
                     if let Err(e) = tracker.record_validation(&new_id, created_at) {
                         tracing::warn!("replace: record_validation failed: {}", e);

@@ -67,6 +67,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 ### Fixed
 
 - A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
+- Replacing a note with the MCP `store` tool did not count as a validation of the new note, while `store --replace` on the command line did. Both count it now; validations raise the trust bonus of a note in recall.
 - The build failed clippy on the current Rust toolchain.
 
 ### Removed

@@ -214,7 +214,7 @@ CREATE TABLE projects (
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 33 tests are ignored in total and none of them run in the Nix build
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 34 tests are ignored in total and none of them run in the Nix build
 - Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
 - `tests/cli_global_scope.rs`, `tests/cli_compat.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data
