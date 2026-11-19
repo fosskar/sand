@@ -45,17 +45,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Set up Claude Code integration - writes CLAUDE.md instructions
-    Init {
-        /// Write instructions to local project CLAUDE.md (non-interactive)
-        #[arg(long, conflicts_with = "global")]
-        local: bool,
-
-        /// Write instructions to global ~/.claude/CLAUDE.md (non-interactive)
-        #[arg(long, conflicts_with = "local")]
-        global: bool,
-    },
-
     /// Show database statistics (item count, chunk count)
     Stats,
 
@@ -111,16 +100,6 @@ enum Commands {
         no_prune: bool,
     },
 
-    /// Drain the consolidation queue (merge near-duplicates, link related)
-    Consolidate {
-        /// Stop after this many batches (each batch handles 5 candidates)
-        #[arg(long, default_value_t = 100)]
-        max_batches: usize,
-    },
-
-    /// Print the project ID derived from the current directory
-    Project,
-
     /// Commands that agent harnesses run as hooks
     #[command(subcommand)]
     Hook(Hook),
@@ -175,7 +154,6 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         None => run_mcp_server(cli.db),
-        Some(Commands::Init { local, global }) => run_init(cli.db, local, global),
         Some(Commands::Stats) => run_stats(cli.db),
         Some(Commands::List { limit, scope }) => run_list(cli.db, limit, &scope, cli.json),
         Some(Commands::Store {
@@ -186,54 +164,12 @@ pub fn run() -> Result<()> {
         Some(Commands::Recall { query, limit }) => run_recall(cli.db, &query, limit, cli.json),
         Some(Commands::Forget { id }) => run_forget(cli.db, &id, cli.json),
         Some(Commands::Compact { force, no_prune }) => run_compact(cli.db, force, no_prune),
-        Some(Commands::Consolidate { max_batches }) => {
-            run_consolidate(cli.db, max_batches, cli.json)
-        }
-        Some(Commands::Project) => run_project(cli.db, cli.json),
         Some(Commands::Hook(Hook::Recall {
             min_similarity,
             limit,
             max_tries,
         })) => run_hook_recall(cli.db, min_similarity, limit, max_tries),
     }
-}
-
-/// Drain the consolidation queue until empty or `max_batches` is reached.
-///
-/// Upstream only drains from MCP server mode, after each recall. CLI `store`
-/// enqueues candidates that nothing ever processes.
-fn run_consolidate(
-    db_override: Option<PathBuf>,
-    max_batches: usize,
-    output_json: bool,
-) -> Result<()> {
-    let ctx = cli_context(db_override);
-
-    if !ctx.db_path.exists() {
-        if output_json {
-            println!("{}", json!({"batches": 0, "remaining": 0}));
-        } else {
-            println!("Database does not exist yet. Nothing to consolidate.");
-        }
-        return Ok(());
-    }
-
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let consolidated = ctx.backend().consolidate(max_batches).await?;
-        let (batches, remaining) = (consolidated.batches, consolidated.remaining);
-
-        if output_json {
-            println!("{}", json!({ "batches": batches, "remaining": remaining }));
-        } else {
-            println!(
-                "Processed {} batch(es); {} candidate(s) remaining.",
-                batches, remaining
-            );
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })
 }
 
 /// Run the MCP server (default behavior)
@@ -285,157 +221,6 @@ fn run_mcp_server(db_override: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// Check if a file contains sand instructions, or the ones Sediment wrote
-fn has_sand_instructions(path: &PathBuf) -> bool {
-    if path.exists()
-        && let Ok(content) = std::fs::read_to_string(path)
-    {
-        return content.contains("mcp__sand__") || content.contains("mcp__sediment__");
-    }
-    false
-}
-
-/// Initialize Claude Code integration
-fn run_init(db_override: Option<PathBuf>, use_local: bool, use_global: bool) -> Result<()> {
-    use dialoguer::{Confirm, Select};
-
-    // Find the project; outside git this stores its id
-    let db_path = db_override.unwrap_or_else(crate::central_db_path);
-    let access_db_path = db_path.parent().unwrap_or(&db_path).join("access.db");
-    let project = crate::resolve_project(&std::env::current_dir()?, &access_db_path)?;
-
-    println!("Initializing sand for: {}", project.root.display());
-    println!("Project ID: {}", project.id);
-
-    // Determine CLAUDE.md paths
-    let local_claude_md = project.root.join("CLAUDE.md");
-    let global_claude_md = dirs::home_dir()
-        .map(|h| h.join(".claude").join("CLAUDE.md"))
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-
-    // Check if instructions already exist in either location
-    let local_has_instructions = has_sand_instructions(&local_claude_md);
-    let global_has_instructions = has_sand_instructions(&global_claude_md);
-
-    // If both already have instructions, we're done
-    if local_has_instructions && global_has_instructions {
-        println!("sand instructions already present in both local and global CLAUDE.md");
-        println!("\nsand initialized successfully!");
-        println!("The MCP server will now auto-detect this project.");
-        return Ok(());
-    }
-
-    // Determine target based on flags or interactive prompt
-    let claude_md_path = if use_local {
-        if local_has_instructions {
-            println!("Local CLAUDE.md already contains sand instructions");
-            println!("\nsand initialized successfully!");
-            println!("The MCP server will now auto-detect this project.");
-            return Ok(());
-        }
-        Some(local_claude_md)
-    } else if use_global {
-        if global_has_instructions {
-            println!("Global CLAUDE.md already contains sand instructions");
-            println!("\nsand initialized successfully!");
-            println!("The MCP server will now auto-detect this project.");
-            return Ok(());
-        }
-        Some(global_claude_md)
-    } else {
-        // Interactive mode - build options with status indicators
-        let local_status = if local_has_instructions {
-            " [already added]"
-        } else {
-            ""
-        };
-        let global_status = if global_has_instructions {
-            " [already added]"
-        } else {
-            ""
-        };
-
-        let options = &[
-            format!("Local  ({}){}", local_claude_md.display(), local_status),
-            format!("Global ({}){}", global_claude_md.display(), global_status),
-            "Skip".to_string(),
-        ];
-
-        // Default to the first option that doesn't already have instructions
-        let default_idx = if local_has_instructions { 1 } else { 0 };
-
-        let selection = Select::new()
-            .with_prompt("Where should sand instructions be added?")
-            .items(options)
-            .default(default_idx)
-            .interact()?;
-
-        match selection {
-            0 => {
-                if local_has_instructions {
-                    println!("Local CLAUDE.md already contains sand instructions");
-                    None
-                } else {
-                    Some(local_claude_md)
-                }
-            }
-            1 => {
-                if global_has_instructions {
-                    println!("Global CLAUDE.md already contains sand instructions");
-                    None
-                } else {
-                    Some(global_claude_md)
-                }
-            }
-            _ => None,
-        }
-    };
-
-    let Some(claude_md_path) = claude_md_path else {
-        println!("\nsand initialized successfully!");
-        println!("The MCP server will now auto-detect this project.");
-        return Ok(());
-    };
-
-    let instructions = generate_claude_md_instructions();
-
-    // Ensure parent directory exists for global path
-    if let Some(parent) = claude_md_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    if claude_md_path.exists() {
-        // Read existing content
-        let existing = std::fs::read_to_string(&claude_md_path)?;
-
-        // In non-interactive mode, always append; in interactive mode, ask
-        let should_append = if use_local || use_global {
-            true
-        } else {
-            Confirm::new()
-                .with_prompt("CLAUDE.md exists. Append sand instructions?")
-                .default(true)
-                .interact()?
-        };
-
-        if should_append {
-            let new_content = format!("{}\n\n{}", existing.trim(), instructions);
-            std::fs::write(&claude_md_path, new_content)?;
-            println!("Updated: {}", claude_md_path.display());
-        } else {
-            println!("Skipped CLAUDE.md update");
-        }
-    } else {
-        std::fs::write(&claude_md_path, &instructions)?;
-        println!("Created: {}", claude_md_path.display());
-    }
-
-    println!("\nsand initialized successfully!");
-    println!("The MCP server will now auto-detect this project.");
-
-    Ok(())
-}
-
 /// Show database statistics
 fn run_stats(db_override: Option<PathBuf>) -> Result<()> {
     let db_path = db_override.unwrap_or_else(crate::central_db_path);
@@ -478,31 +263,15 @@ fn cli_context(db_override: Option<PathBuf>) -> CliContext {
     let sand_dir = db_path.parent().unwrap_or(&db_path);
     let access_db_path = sand_dir.join("access.db");
 
-    // a caller that resolved the project earlier can act on it after the
-    // project directory is gone; an empty value forces global context
-    let project_id = match crate::setting("PROJECT_ID") {
-        Some(id) => Some(id).filter(|id| !id.is_empty()),
-        None => std::env::current_dir()
-            .ok()
-            .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok())
-            .map(|project| project.id),
-    };
+    let project_id = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| crate::resolve_project(&cwd, &access_db_path).ok())
+        .map(|project| project.id);
 
     CliContext {
         db_path,
         project_id,
     }
-}
-
-/// Print the project ID that project-scoped commands would use.
-fn run_project(db_override: Option<PathBuf>, output_json: bool) -> Result<()> {
-    let ctx = cli_context(db_override);
-    if output_json {
-        println!("{}", json!({ "project_id": ctx.project_id }));
-    } else if let Some(id) = ctx.project_id {
-        println!("{id}");
-    }
-    Ok(())
 }
 
 /// List stored items
@@ -631,7 +400,6 @@ fn run_store(
                 content,
                 scope,
                 replace_id: replace,
-                record_validation: true,
                 created_at: None,
             })
             .await?;
@@ -1040,32 +808,4 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{} bytes", bytes)
     }
-}
-
-/// Generate CLAUDE.md instructions for sand
-fn generate_claude_md_instructions() -> String {
-    r#"# sand Memory System
-
-Use `mcp__sand__store`, `mcp__sand__recall`, `mcp__sand__list`, and `mcp__sand__forget` for persistent memory.
-
-## Proactive Usage
-
-- **Recall at conversation start** when context might exist (preferences, prior decisions, project conventions)
-- **Store immediately** when the user states a preference, makes a decision, or you learn something important about the codebase
-- Use `scope: "global"` for cross-project preferences; default `"project"` scope for everything else
-
-## What to Store
-
-- User preferences and working style
-- Architectural decisions and rationale
-- Project conventions (naming, patterns, tools)
-- Non-obvious learnings about the codebase
-
-## What NOT to Store
-
-- Transient task context (current debugging session, temporary workarounds)
-- Information already in CLAUDE.md or README
-- Obvious facts derivable from code
-"#
-    .to_string()
 }

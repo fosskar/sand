@@ -54,14 +54,11 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 ### Changes
 
-- The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, the MCP server name, and the `mcp__sand__` instructions that `sand init` writes.
+- The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, and the MCP server name.
 - sand writes no `.sediment/` or `.sand/` directories and no per-repository files. In a git repository the project ID is computed from the root commit on every start. IDs of other directories live in `access.db`. Existing `.sediment/config` files are still honoured.
 
 ### Added
 
-- `consolidate` command: drains the consolidation queue, which merges near-duplicates and links related notes. Sediment drained it only inside the MCP server, so notes stored through the CLI were never merged.
-- `project` command: prints the project ID of the current directory.
-- `SAND_PROJECT_ID` setting: sets the project ID for CLI commands; an empty value means global context.
 - `hook recall` command for `UserPromptSubmit` hooks; see [Harness integration](#harness-integration).
 - Guidance in the MCP tool descriptions and server instructions on when to recall, when to store, and which scope to use.
 - Nix flake with a package and a dev shell. CI runs the flake checks (build and tests, formatting, clippy) on nixbot.
@@ -69,11 +66,16 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 ### Fixed
 
 - A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
+- Near-duplicates were merged, and similar notes linked, only after a recall in the MCP server, so notes stored through the CLI were rarely or never merged. Every store now starts consolidation: the MCP server runs it in the background, `sand store` runs one batch before it exits.
+- Replacing a note with the MCP `store` tool did not count as a validation of the new note, while `store --replace` on the command line did. Both count it now; validations raise the trust bonus of a note in recall.
 - The build failed clippy on the current Rust toolchain.
 
 ### Removed
 
 - The Homebrew formula, the macOS binaries and the crates.io package. A GitHub Actions workflow builds the Linux x86_64 release binary again, and `install.sh` installs it; other systems install with `cargo install` or the Nix flake.
+- The `init` command, which wrote usage instructions into `CLAUDE.md`. The MCP tool descriptions and the server instructions carry that guidance. Sediment and sand 0.6.0 had the command.
+- The `project` command, which printed the project ID of the current directory, and the `SAND_PROJECT_ID` setting, which replaced that ID for CLI commands. sand 0.6.0 had both.
+- The `consolidate` command, which drained the consolidation queue by hand. Consolidation runs after every store now. sand 0.6.0 had the command.
 
 ### Compatibility
 
@@ -82,12 +84,11 @@ These stay permanently:
 - sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged apart from the added `projects` table. It never moves or copies the database.
 - Project IDs that Sediment stored in `.sediment/config`, in the project directory or in the central state next to the database, are imported once, so the project ID stays the same. A `.sediment/` directory still marks a project root. The files are only read, never changed or deleted.
 
-These old names are accepted until 1.0 and then removed. While sand uses one of the first three, it prints one line per process on stderr that names the replacement.
+These old names are accepted until 1.0 and then removed. While sand uses one of them, it prints one line per process on stderr that names the replacement.
 
 - A `sediment` executable is installed next to `sand` and behaves the same. MCP client configurations that start `sediment` keep working.
-- Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_PROJECT_ID`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
+- Each `SAND_*` variable falls back to its `SEDIMENT_*` name when it is unset: `SEDIMENT_DB`, `SEDIMENT_EMBEDDING_MODEL`, `SEDIMENT_FTS_BOOST_MAX`, `SEDIMENT_FTS_GAMMA`. When both are set, the `SAND_*` value wins.
 - Without a database path, sand uses `~/.sand/data`. If `~/.sand` does not exist and `~/.sediment/data` does, it uses `~/.sediment/data`.
-- `sand init` recognises the instructions Sediment wrote (`mcp__sediment__`) and does not add a second block.
 
 One direction is not covered: a directory outside git that was first used with sand has no `.sediment/config`, so going back to Sediment gives it a new project ID there.
 
@@ -111,7 +112,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Claude Code
 
-Run `sand init` in your project, or add manually to `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -223,7 +224,6 @@ Harnesses without command hooks can run the same command from their own extensio
 
 ```bash
 sand                              # Start MCP server
-sand init                         # Set up Claude Code integration
 sand stats                        # Show database statistics
 sand list                         # List stored items
 sand list --scope global          # List global items

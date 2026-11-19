@@ -262,7 +262,6 @@ async fn execute_store(backend: &impl Backend, args: Option<Value>) -> CallToolR
         content: params.content,
         scope,
         replace_id: params.replace_id,
-        record_validation: false,
         created_at,
     };
 
@@ -868,6 +867,28 @@ mod tests {
             forget.content
         );
         assert!(list_ids(&ctx, "all").await.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_store_replace_id_records_validation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");
+
+        let old_id = store_id(
+            &execute_tool(&ctx, "store", Some(json!({ "content": "first version" }))).await,
+        );
+        let new_id = store_id(
+            &execute_tool(
+                &ctx,
+                "store",
+                Some(json!({ "content": "second version", "replace_id": old_id })),
+            )
+            .await,
+        );
+
+        let tracker = crate::access::AccessTracker::open(&tmp.path().join("access.db")).unwrap();
+        assert_eq!(tracker.get_validation_count(&new_id).unwrap(), 1);
     }
 
     #[tokio::test]

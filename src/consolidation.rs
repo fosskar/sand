@@ -1,6 +1,7 @@
 //! Memory consolidation: auto-merging duplicates and linking related items.
 //!
-//! Consolidation runs as a background task triggered after recall.
+//! The MCP server runs it as a background task after store and recall; the CLI runs one
+//! batch after a store that queued candidates.
 //! It processes items from a queue populated during store (conflict detection).
 
 use std::path::Path;

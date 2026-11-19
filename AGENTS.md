@@ -14,7 +14,7 @@ Guidance for coding agents working in this repository.
 
 This repository is `sand` (github.com/fosskar/sand). It continues Sediment 0.5.1 by rendro and stays a drop-in replacement for it: the old executable name, settings, data directory and `.sediment/config` project ids keep working (README.md, "Differences from Sediment"). Keep those fallbacks and the on-disk format when you change the code.
 
-Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice except `init`): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), the `~/.sediment/data` default in `default_db_path`, and `mcp__sediment__` in `has_sand_instructions`. The database format and the `.sediment/config` import stay.
+Temporary fallbacks, removed together in 1.0 (each prints a `sand::deprecated` notice): the `SEDIMENT_*` variable names in `sand::setting`, the `sediment` executable (`src/bin/sediment.rs`), and the `~/.sediment/data` default in `default_db_path`. The database format and the `.sediment/config` import stay.
 
 ## Build Commands
 
@@ -29,7 +29,6 @@ cargo run --release
 cargo run --release -- --verbose
 
 # Run CLI commands
-cargo run --release -- init                     # Initialize project
 cargo run --release -- stats                    # Show database statistics
 cargo run --release -- list                     # List stored items
 cargo run --release -- list --scope global      # List global items
@@ -38,8 +37,6 @@ cargo run --release -- store -                  # Store from stdin
 cargo run --release -- recall "search query"    # Semantic search
 cargo run --release -- forget <id>              # Delete an item
 cargo run --release -- compact                  # Compact LanceDB storage
-cargo run --release -- consolidate              # Drain the consolidation queue (merge duplicates, link related)
-cargo run --release -- project                  # Print the project ID of the current directory
 echo '{"prompt":"...","session_id":"s1"}' | cargo run --release -- hook recall  # UserPromptSubmit hook
 cargo run --release -- --json list              # JSON output (any command)
 
@@ -78,7 +75,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 ### Core Components
 
 - **`src/main.rs`**, **`src/bin/sediment.rs`** - the `sand` and `sediment` executables; both call `sand::cli::run`
-- **`src/cli.rs`** - CLI with subcommands (init, stats, list, store, recall, forget, compact, consolidate, project, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
+- **`src/cli.rs`** - CLI with subcommands (stats, list, store, recall, forget, compact, hook recall) and MCP server startup. `hook recall` prints a `<recalled_memories>` block for a `UserPromptSubmit` hook and calls the same `LocalBackend::recall` as `recall`
 - **`src/backend/`** - The `Backend` trait: the store operations the CLI and the MCP server call. `LocalBackend` implements it on the local database, runs the recall pipeline, and with `with_background_work` (MCP server) the background tasks
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
@@ -102,10 +99,10 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 
 ### Data Flow
 
-1. **Store**: Content → Embedder (384-dim vector) → LanceDB storage → Graph node creation → Conflict detection → Consolidation queue
+1. **Store**: Content → Embedder (384-dim vector) → LanceDB storage → Graph node creation → Conflict detection → Consolidation queue → Consolidation (MCP server: background task; CLI: one batch when the store queued candidates)
 2. **Chunking**: Long content (>1000 chars) → Type-aware splitting → Individual chunk embeddings
 3. **Recall**: Query → Embedder → Vector similarity search → Project boosting → Decay scoring → Trust-weighted re-ranking → Graph backfill → 1-hop graph expansion → Co-access suggestions → Cross-project flagging → Background consolidation + co-access recording
-4. **Consolidation** (background): Queue candidates → >=0.95 similarity: merge (delete old, transfer edges, SUPERSEDES edge) → 0.85-0.95: link (RELATED edge)
+4. **Consolidation** (after store and recall): Queue candidates → >=0.95 similarity: merge (delete old, transfer edges, SUPERSEDES edge) → 0.85-0.95: link (RELATED edge)
 5. **Clustering** (every 10th recall): Triangle detection in graph → RELATED edges labelled `cluster-<id>`
 
 ### Environment Variables
@@ -114,7 +111,6 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 |----------|---------|-------------|
 | `SAND_DB` | `~/.sand/data` | Override database path. Also available as `--db` CLI flag. Useful for ephemeral/isolated storage: `SAND_DB=/tmp/task sand store "..."` |
 | `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model. Options: `all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5` (768-dim) |
-| `SAND_PROJECT_ID` | derived from the current directory | CLI only. Use this project ID instead of detecting one; an empty value means no project (global context) |
 | `SAND_FTS_BOOST_MAX`, `SAND_FTS_GAMMA` | `0.12`, `2.0` | Override the BM25 boost parameters. Read only in builds with the `bench` feature |
 
 Each `SAND_<name>` variable falls back to `SEDIMENT_<name>` when it is unset (`sand::setting`).
@@ -217,7 +213,7 @@ CREATE TABLE projects (
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 33 tests are ignored in total and none of them run in the Nix build
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 35 tests are ignored in total and none of them run in the Nix build
 - Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
 - `tests/cli_global_scope.rs`, `tests/cli_compat.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data
