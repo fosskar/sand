@@ -1402,6 +1402,26 @@ async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (
         }
     }
 
+    // lance 14 cannot optimize a vector index in the v1 format of lance 0.23
+    // (sediment 0.5.1, sand 0.6.0), so rebuild it first
+    match has_legacy_vector_index(table).await {
+        Ok(true) => {
+            info!("{} vector index has the legacy format, rebuilding", label);
+            if let Err(e) = table
+                .create_index(&["vector"], lancedb::index::Index::Auto)
+                .replace(true)
+                .execute()
+                .await
+            {
+                tracing::warn!("{} vector index rebuild failed: {}", label, e);
+            }
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!("{} vector index check failed: {}", label, e);
+        }
+    }
+
     // Phase 3: Index — optimize indices for new data
     match optimize(
         table,
@@ -1441,6 +1461,37 @@ async fn optimize(
                 .unwrap_or("unknown panic")
         )),
     }
+}
+
+/// Whether a segment of the table's vector index is in lance's legacy v1 file format.
+async fn has_legacy_vector_index(table: &Table) -> Result<bool> {
+    use lance::index::DatasetIndexExt;
+
+    let Some(dataset) = table.dataset() else {
+        return Ok(false);
+    };
+    let dataset = dataset.get().await?;
+    for index in table.list_indices().await? {
+        if !index.columns.iter().any(|c| c == "vector") {
+            continue;
+        }
+        let stats: serde_json::Value = serde_json::from_str(
+            &dataset
+                .index_statistics(&index.name)
+                .await
+                .map_err(|e| SandError::Database(e.to_string()))?,
+        )
+        .map_err(|e| SandError::Database(e.to_string()))?;
+        let legacy = stats["indices"].as_array().is_some_and(|segments| {
+            segments
+                .iter()
+                .any(|segment| segment["index_file_version"] == "Legacy")
+        });
+        if legacy {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Configuration for table optimization.
@@ -2474,9 +2525,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_opens_store_written_by_sediment_0_5_1() {
-        // lancedb 0.17 wrote the fixture (lance file format 2.0); dependency updates must keep reading it
+    /// Copy `tests/fixtures/<name>` into a temporary directory.
+    fn copy_fixture(name: &str) -> tempfile::TempDir {
         fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
             std::fs::create_dir_all(to).unwrap();
             for entry in std::fs::read_dir(from).unwrap() {
@@ -2491,12 +2541,18 @@ mod tests {
         }
         let tmp = tempfile::TempDir::new().unwrap();
         copy_dir(
-            std::path::Path::new(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/sediment-0.5.1"
-            )),
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
             tmp.path(),
         );
+        tmp
+    }
+
+    #[tokio::test]
+    async fn test_opens_store_written_by_sediment_0_5_1() {
+        // lancedb 0.17 wrote the fixture (lance file format 2.0); dependency updates must keep reading it
+        let tmp = copy_fixture("sediment-0.5.1");
         let db = lancedb::connect(tmp.path().to_str().unwrap())
             .execute()
             .await
@@ -2542,5 +2598,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(hits.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rebuilds_legacy_vector_index() {
+        // lancedb 0.17 built the fixture's IVF_PQ index in lance's v1 format, which lance 14 panics on when optimizing
+        let tmp = copy_fixture("lancedb-0.17-ivf-pq");
+        let db = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db.open_table("items").execute().await.unwrap();
+        assert!(has_legacy_vector_index(&table).await.unwrap());
+
+        optimize_table("items", &table, &CompactConfig::default()).await;
+
+        assert!(!has_legacy_vector_index(&table).await.unwrap());
+        assert!(
+            optimize(
+                &table,
+                lancedb::table::OptimizeAction::Index(lancedb::table::OptimizeOptions::default()),
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(table.count_rows(None).await.unwrap(), 260);
     }
 }

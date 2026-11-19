@@ -27,6 +27,8 @@ path = "src/bin/sediment.rs"
 [dependencies]
 # Database - LanceDB for vector storage
 lancedb = "0.41"
+# for the index statistics compaction reads - must match lancedb's version
+lance = { version = "=14.0.2", default-features = false }
 # Arrow crates - must match lancedb's version (v58)
 arrow-array = "58"
 arrow-schema = "58"

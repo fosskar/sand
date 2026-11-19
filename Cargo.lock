@@ -5902,6 +5902,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "hf-hub",
+ "lance",
  "lancedb",
  "rand 0.10.4",
  "rusqlite",
