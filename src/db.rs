@@ -635,14 +635,8 @@ impl Database {
                 // Always replace: LanceDB FTS indexes are not auto-updated on insert,
                 // so we rebuild to ensure newly stored items are searchable.
                 if row_count > 0 {
-                    // the tokenizer defaults of lancedb 0.17; newer lance stems, drops stop words and folds ascii
-                    let fts = lancedb::index::scalar::FtsIndexBuilder::default()
-                        .with_position(true)
-                        .stem(false)
-                        .remove_stop_words(false)
-                        .ascii_folding(false);
                     match table
-                        .create_index(&["content"], lancedb::index::Index::FTS(fts))
+                        .create_index(&["content"], fts_index())
                         .replace(true)
                         .execute()
                         .await
@@ -1654,6 +1648,18 @@ fn item_to_batch(item: &Item) -> Result<RecordBatch> {
     .map_err(|e| SandError::Database(format!("Failed to create batch: {}", e)))
 }
 
+/// The FTS index on `content`, rebuilt on every open.
+fn fts_index() -> lancedb::index::Index {
+    // the tokenizer defaults of lancedb 0.17; newer lance stems, drops stop words and folds ascii
+    lancedb::index::Index::FTS(
+        lancedb::index::scalar::FtsIndexBuilder::default()
+            .with_position(true)
+            .stem(false)
+            .remove_stop_words(false)
+            .ascii_folding(false),
+    )
+}
+
 fn batch_to_items(batch: &RecordBatch) -> Result<Vec<Item>> {
     let mut items = Vec::new();
 
@@ -2432,5 +2438,75 @@ mod tests {
             "Error should mention invalid project_id, got: {}",
             err_msg
         );
+    }
+
+    #[tokio::test]
+    async fn test_opens_store_written_by_sediment_0_5_1() {
+        // lancedb 0.17 wrote the fixture (lance file format 2.0); dependency updates must keep reading it
+        fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_dir(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        copy_dir(
+            std::path::Path::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/sediment-0.5.1"
+            )),
+            tmp.path(),
+        );
+        let db = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db.open_table("items").execute().await.unwrap();
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let mut contents: Vec<String> = batches
+            .iter()
+            .flat_map(|b| batch_to_items(b).unwrap())
+            .map(|item| item.content)
+            .collect();
+        contents.sort();
+        assert_eq!(
+            contents,
+            [
+                "[fact] fixture note one: written by sediment 0.5.1 with lancedb 0.17",
+                "[pref] fixture note two: an old store must open after a dependency update",
+            ]
+        );
+
+        // every open replaces the FTS index that the old version built
+        table
+            .create_index(&["content"], fts_index())
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+        let hits: Vec<RecordBatch> = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("dependency".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(hits.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
     }
 }
