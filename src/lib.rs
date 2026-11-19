@@ -314,9 +314,17 @@ pub fn finish_project_migration(access_db: &Path, old_id: &str, new_id: &str) ->
     Ok(())
 }
 
+/// Lowercase hex SHA-256 of `bytes`.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Read the config Sediment kept for `dir`: in its central state, else in the directory.
 fn legacy_config(dir: &Path, state_dir: &Path) -> Result<Option<ProjectConfig>> {
-    let key = format!("{:x}", Sha256::digest(dir.as_os_str().as_encoded_bytes()));
+    let key = sha256_hex(dir.as_os_str().as_encoded_bytes());
     let central = state_dir
         .join("projects")
         .join(key)
@@ -404,6 +412,15 @@ mod tests {
     fn test_list_scope_default_is_project() {
         // Fix #17: ListScope::default() should be Project, matching the tool schema default
         assert_eq!(ListScope::default(), ListScope::Project);
+    }
+
+    #[test]
+    fn test_sha256_hex() {
+        // sediment keyed its central project configs by this format
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
