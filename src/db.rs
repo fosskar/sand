@@ -1323,89 +1323,123 @@ impl Database {
     pub async fn optimize_tables(&self, config: &CompactConfig) -> Result<CompactStats> {
         let mut stats = CompactStats::default();
 
-        for (label, table) in [("items", &self.items_table), ("chunks", &self.chunks_table)] {
-            let Some(table) = table else { continue };
-
-            // Phase 1: Compact — merge small files, materialize deletions
-            let compact_opts = lancedb::table::CompactionOptions {
-                target_rows_per_fragment: 1024,
-                materialize_deletions: true,
-                materialize_deletions_threshold: 0.0,
-                num_threads: config.num_threads,
-                ..Default::default()
-            };
-            match table
-                .optimize(lancedb::table::OptimizeAction::Compact {
-                    options: compact_opts,
-                    remap_options: None,
-                })
-                .await
-            {
-                Ok(s) => {
-                    if let Some(ref c) = s.compaction {
-                        info!(
-                            "{} compaction: {} fragments removed, {} new, {} files removed",
-                            label, c.fragments_removed, c.fragments_added, c.files_removed,
-                        );
-                    }
-                    match label {
-                        "items" => stats.items_compacted = s.compaction.is_some(),
-                        "chunks" => stats.chunks_compacted = s.compaction.is_some(),
-                        _ => {}
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("{} compaction failed: {}", label, e);
-                }
-            }
-
-            // Phase 2: Prune — remove old dataset versions
-            if !config.skip_prune {
-                let older_than = config.prune_older_than;
-                match table
-                    .optimize(lancedb::table::OptimizeAction::Prune {
-                        older_than,
-                        delete_unverified: Some(config.delete_unverified),
-                        error_if_tagged_old_versions: None,
-                    })
-                    .await
-                {
-                    Ok(s) => {
-                        if let Some(ref p) = s.prune {
-                            info!(
-                                "{} prune: {} bytes removed, {} old versions removed",
-                                label, p.bytes_removed, p.old_versions,
-                            );
-                        }
-                        match label {
-                            "items" => stats.items_pruned = s.prune.is_some(),
-                            "chunks" => stats.chunks_pruned = s.prune.is_some(),
-                            _ => {}
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("{} prune failed: {}", label, e);
-                    }
-                }
-            }
-
-            // Phase 3: Index — optimize indices for new data
-            match table
-                .optimize(lancedb::table::OptimizeAction::Index(
-                    lancedb::table::OptimizeOptions::default(),
-                ))
-                .await
-            {
-                Ok(_) => {
-                    info!("{} index optimization complete", label);
-                }
-                Err(e) => {
-                    tracing::warn!("{} index optimization failed: {}", label, e);
-                }
-            }
+        if let Some(table) = &self.items_table {
+            (stats.items_compacted, stats.items_pruned) =
+                optimize_table("items", table, config).await;
+        }
+        if let Some(table) = &self.chunks_table {
+            (stats.chunks_compacted, stats.chunks_pruned) =
+                optimize_table("chunks", table, config).await;
         }
 
         Ok(stats)
+    }
+}
+
+/// Compact, prune and re-index one table; returns whether it was compacted and pruned.
+///
+/// A failing phase is logged and the next one still runs.
+async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (bool, bool) {
+    let mut compacted = false;
+    let mut pruned = false;
+
+    // Phase 1: Compact — merge small files, materialize deletions
+    let compact_opts = lancedb::table::CompactionOptions {
+        target_rows_per_fragment: 1024,
+        materialize_deletions: true,
+        materialize_deletions_threshold: 0.0,
+        num_threads: config.num_threads,
+        ..Default::default()
+    };
+    match optimize(
+        table,
+        lancedb::table::OptimizeAction::Compact {
+            options: compact_opts,
+            remap_options: None,
+        },
+    )
+    .await
+    {
+        Ok(s) => {
+            if let Some(ref c) = s.compaction {
+                info!(
+                    "{} compaction: {} fragments removed, {} new, {} files removed",
+                    label, c.fragments_removed, c.fragments_added, c.files_removed,
+                );
+            }
+            compacted = s.compaction.is_some();
+        }
+        Err(e) => {
+            tracing::warn!("{} compaction failed: {}", label, e);
+        }
+    }
+
+    // Phase 2: Prune — remove old dataset versions
+    if !config.skip_prune {
+        let older_than = config.prune_older_than;
+        match optimize(
+            table,
+            lancedb::table::OptimizeAction::Prune {
+                older_than,
+                delete_unverified: Some(config.delete_unverified),
+                error_if_tagged_old_versions: None,
+            },
+        )
+        .await
+        {
+            Ok(s) => {
+                if let Some(ref p) = s.prune {
+                    info!(
+                        "{} prune: {} bytes removed, {} old versions removed",
+                        label, p.bytes_removed, p.old_versions,
+                    );
+                }
+                pruned = s.prune.is_some();
+            }
+            Err(e) => {
+                tracing::warn!("{} prune failed: {}", label, e);
+            }
+        }
+    }
+
+    // Phase 3: Index — optimize indices for new data
+    match optimize(
+        table,
+        lancedb::table::OptimizeAction::Index(lancedb::table::OptimizeOptions::default()),
+    )
+    .await
+    {
+        Ok(_) => {
+            info!("{} index optimization complete", label);
+        }
+        Err(e) => {
+            tracing::warn!("{} index optimization failed: {}", label, e);
+        }
+    }
+
+    (compacted, pruned)
+}
+
+/// Run one optimize action, turning a panic inside lance into an error.
+async fn optimize(
+    table: &Table,
+    action: lancedb::table::OptimizeAction,
+) -> std::result::Result<lancedb::table::OptimizeStats, String> {
+    use futures::FutureExt;
+
+    match std::panic::AssertUnwindSafe(table.optimize(action))
+        .catch_unwind()
+        .await
+    {
+        Ok(result) => result.map_err(|e| e.to_string()),
+        Err(panic) => Err(format!(
+            "panicked: {}",
+            panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic")
+        )),
     }
 }
 

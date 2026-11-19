@@ -71,7 +71,8 @@ criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 rand = "0.10"
 
 [profile.release]
-panic = "abort"
+# unwind, so a panic inside lance during compaction is caught instead of ending the mcp server
+panic = "unwind"
 
 [[bench]]
 name = "recall_bench"
