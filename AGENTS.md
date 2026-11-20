@@ -110,7 +110,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SAND_DB` | `~/.sand/data` | Override database path. Also available as `--db` CLI flag. Useful for ephemeral/isolated storage: `SAND_DB=/tmp/task sand store "..."` |
-| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model. Options: `all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5` (768-dim) |
+| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model. Options: `all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5` (768-dim), `mdbr-leaf-ir` |
 | `SAND_FTS_BOOST_MAX`, `SAND_FTS_GAMMA` | `0.12`, `2.0` | Override the BM25 boost parameters. Read only in builds with the `bench` feature |
 
 Each `SAND_<name>` variable falls back to `SEDIMENT_<name>` when it is unset (`sand::setting`).
