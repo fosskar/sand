@@ -123,7 +123,7 @@ Priority: `--db` flag > `SAND_DB` > `SEDIMENT_DB` > default `~/.sand/data`, or `
 - **Single central database** at `~/.sand/data/` stores all projects; graph + access at `~/.sand/access.db`
 - **Project scoping** (`resolve_project` in `src/lib.rs`): in a git repository the project ID is the root commit hash, derived on every start, so clones and worktrees share it and nothing is written. Any other directory gets a UUID in the `projects` table of `access.db`, keyed by the canonical project root; the nearest ancestor with a row is the root, and a `.git` whose ID cannot be derived (shallow clone, no commits) also makes a root. Sediment's `.sediment/config` files, in the directory or under `<parent of the database path>/projects/<sha256 of the path>/.sediment/config`, are imported into the table and never rewritten; a `.sediment/` directory still makes a root. sand creates no marker directories. When a directory with a stored UUID becomes a git repository, the MCP server moves its items to the git ID and then sets the row to the git ID
 - **Similarity boosting**: Same-project items unchanged, different projects get 0.875x penalty (12.5% spread)
-- **Hybrid search**: Vector similarity combined with FTS/BM25 scoring. BM25 boost is additive (max 0.12, power-law gamma 2.0). FTS index rebuilt on each store
+- **Hybrid search**: Vector similarity combined with FTS/BM25 scoring. BM25 boost is additive (max 0.12, power-law gamma 2.0). FTS index created once; search scans rows added since, and compaction rebuilds it
 - **Conflict detection**: Items with >=0.85 similarity flagged on store and enqueued for consolidation
 - **Fresh DB connection per tool call** with shared embedder for efficiency
 - **Memory decay scoring**: Recall results re-ranked using freshness (hyperbolic decay, 0.5 at 30 days) and access frequency (log-scaled). Tracked in SQLite sidecar since LanceDB is append-oriented.
@@ -213,7 +213,7 @@ CREATE TABLE projects (
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 35 tests are ignored in total and none of them run in the Nix build
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 36 tests are ignored in total and none of them run in the Nix build
 - Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
 - `tests/cli_global_scope.rs`, `tests/cli_compat.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data

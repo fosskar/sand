@@ -632,17 +632,20 @@ impl Database {
                 }
 
                 // FTS index on content column (no minimum row requirement).
-                // Always replace: LanceDB FTS indexes are not auto-updated on insert,
-                // so we rebuild to ensure newly stored items are searchable.
-                if row_count > 0 {
+                // Search scans rows added after the index was built; `optimize_table` rebuilds it.
+                let has_fts_index = indices.iter().any(|idx| {
+                    idx.index_type == lancedb::index::IndexType::FTS
+                        && idx.columns.contains(&"content".to_string())
+                });
+                if row_count > 0 && !has_fts_index {
                     match table
                         .create_index(&["content"], fts_index())
-                        .replace(true)
+                        .replace(false)
                         .execute()
                         .await
                     {
                         Ok(_) => {
-                            debug!("FTS index refreshed on {} table ({} rows)", name, row_count)
+                            info!("FTS index created on {} table ({} rows)", name, row_count)
                         }
                         Err(e) => {
                             // Non-fatal: vector-only search still works
@@ -1338,10 +1341,46 @@ impl Database {
 
 /// Compact, prune and re-index one table; returns whether it was compacted and pruned.
 ///
-/// A failing phase is logged and the next one still runs.
+/// A failing phase is logged and the next one still runs. When the FTS index cannot be
+/// rebuilt, nothing runs.
 async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (bool, bool) {
     let mut compacted = false;
     let mut pruned = false;
+
+    // Phase 0: rebuild the FTS index and leave it out of phase 3. lance 4 panics when
+    // compaction remaps an FTS index that lance 0.23 (sediment 0.5.1, sand 0.6.0) built.
+    let indices = match table.list_indices().await {
+        Ok(indices) => indices,
+        Err(e) => {
+            tracing::warn!(
+                "{} index listing failed, skipping optimization: {}",
+                label,
+                e
+            );
+            return (compacted, pruned);
+        }
+    };
+    let mut other_indices = Vec::new();
+    for index in indices {
+        if index.index_type != lancedb::index::IndexType::FTS {
+            other_indices.push(index.name);
+            continue;
+        }
+        if let Err(e) = table
+            .create_index(&index.columns, fts_index())
+            .replace(true)
+            .execute()
+            .await
+        {
+            tracing::warn!(
+                "{} FTS index rebuild failed, skipping optimization: {}",
+                label,
+                e
+            );
+            return (compacted, pruned);
+        }
+        info!("{} FTS index rebuilt", label);
+    }
 
     // Phase 1: Compact — merge small files, materialize deletions
     let compact_opts = lancedb::table::CompactionOptions {
@@ -1398,11 +1437,11 @@ async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (
         }
     }
 
-    // Phase 3: Index — optimize indices for new data
+    // Phase 3: Index — add new rows to the indices other than FTS
+    let mut options = lancedb::table::OptimizeOptions::default();
+    options.index_names = Some(other_indices);
     match table
-        .optimize(lancedb::table::OptimizeAction::Index(
-            lancedb::table::OptimizeOptions::default(),
-        ))
+        .optimize(lancedb::table::OptimizeAction::Index(options))
         .await
     {
         Ok(_) => {
@@ -1655,7 +1694,7 @@ fn item_to_batch(item: &Item) -> Result<RecordBatch> {
     .map_err(|e| SandError::Database(format!("Failed to create batch: {}", e)))
 }
 
-/// The FTS index on `content`, rebuilt on every open.
+/// The FTS index on `content`, created when a table has none and rebuilt by `optimize_table`.
 fn fts_index() -> lancedb::index::Index {
     // the tokenizer defaults of lancedb 0.17; newer lance stems, drops stop words and folds ascii
     lancedb::index::Index::FTS(
@@ -2427,6 +2466,54 @@ mod tests {
 
     #[tokio::test]
     #[ignore] // requires model download
+    async fn test_fts_finds_new_replaced_and_forgotten_notes_without_rebuild() {
+        async fn fts_ids(db: &Database, query: &str) -> Vec<String> {
+            let table = db.items_table.as_ref().unwrap();
+            let hits = db.fts_rank_items(table, query, 10).await.unwrap();
+            hits.into_keys().collect()
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("data");
+        let mut db = Database::open(&path).await.unwrap();
+        db.store_item(Item::new("note about tabs")).await.unwrap();
+        // the reopen creates the FTS index
+        let mut db = Database::open(&path).await.unwrap();
+
+        let old = db
+            .store_item(Item::new("note about quokka"))
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(fts_ids(&db, "quokka").await, vec![old.clone()]);
+
+        let version = db.items_table.as_ref().unwrap().version().await.unwrap();
+        let mut db = Database::open(&path).await.unwrap();
+        db.search_items("quokka", 5, ItemFilters::default())
+            .await
+            .unwrap();
+        let table = db.items_table.clone().unwrap();
+        assert_eq!(table.version().await.unwrap(), version, "index rebuilt");
+
+        db.optimize_tables(&CompactConfig::default()).await.unwrap();
+        let stats = table.index_stats("content_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_unindexed_rows, 0);
+
+        // replace, as the backend does it: store the new note, delete the old one
+        let new = db
+            .store_item(Item::new("note about wombat"))
+            .await
+            .unwrap()
+            .id;
+        db.delete_item(&old).await.unwrap();
+        assert!(fts_ids(&db, "quokka").await.is_empty());
+        assert_eq!(fts_ids(&db, "wombat").await, vec![new.clone()]);
+
+        db.delete_item(&new).await.unwrap();
+        assert!(fts_ids(&db, "wombat").await.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
     async fn test_list_items_rejects_invalid_project_id() {
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("data");
@@ -2503,10 +2590,9 @@ mod tests {
             ]
         );
 
-        // every open replaces the FTS index that the old version built
+        // the fixture has no FTS index; open creates it
         table
             .create_index(&["content"], fts_index())
-            .replace(true)
             .execute()
             .await
             .unwrap();
@@ -2538,5 +2624,24 @@ mod tests {
 
         let stats = table.index_stats("vector_idx").await.unwrap().unwrap();
         assert_eq!((stats.num_indexed_rows, stats.num_unindexed_rows), (260, 0));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rebuilds_legacy_fts_index() {
+        // lancedb 0.17 built the fixture's FTS index; lance 4 panics when compaction remaps it
+        let tmp = copy_fixture("lancedb-0.17-fts");
+        let db = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db.open_table("items").execute().await.unwrap();
+        // compaction rewrites the indexed fragment only when it has deletions
+        table.delete("id = 'b'").await.unwrap();
+
+        let (compacted, _) = optimize_table("items", &table, &CompactConfig::default()).await;
+        assert!(compacted);
+
+        let stats = table.index_stats("content_idx").await.unwrap().unwrap();
+        assert_eq!((stats.num_indexed_rows, stats.num_unindexed_rows), (2, 0));
     }
 }
