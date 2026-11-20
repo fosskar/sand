@@ -1338,10 +1338,46 @@ impl Database {
 
 /// Compact, prune and re-index one table; returns whether it was compacted and pruned.
 ///
-/// A failing phase is logged and the next one still runs.
+/// A failing phase is logged and the next one still runs. When the FTS index cannot be
+/// rebuilt, nothing runs.
 async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (bool, bool) {
     let mut compacted = false;
     let mut pruned = false;
+
+    // Phase 0: rebuild the FTS index and leave it out of phase 3. lance 4 panics when
+    // compaction remaps an FTS index that lance 0.23 (sediment 0.5.1, sand 0.6.0) built.
+    let indices = match table.list_indices().await {
+        Ok(indices) => indices,
+        Err(e) => {
+            tracing::warn!(
+                "{} index listing failed, skipping optimization: {}",
+                label,
+                e
+            );
+            return (compacted, pruned);
+        }
+    };
+    let mut other_indices = Vec::new();
+    for index in indices {
+        if index.index_type != lancedb::index::IndexType::FTS {
+            other_indices.push(index.name);
+            continue;
+        }
+        if let Err(e) = table
+            .create_index(&index.columns, fts_index())
+            .replace(true)
+            .execute()
+            .await
+        {
+            tracing::warn!(
+                "{} FTS index rebuild failed, skipping optimization: {}",
+                label,
+                e
+            );
+            return (compacted, pruned);
+        }
+        info!("{} FTS index rebuilt", label);
+    }
 
     // Phase 1: Compact — merge small files, materialize deletions
     let compact_opts = lancedb::table::CompactionOptions {
@@ -1398,11 +1434,11 @@ async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (
         }
     }
 
-    // Phase 3: Index — optimize indices for new data
+    // Phase 3: Index — add new rows to the indices other than FTS
+    let mut options = lancedb::table::OptimizeOptions::default();
+    options.index_names = Some(other_indices);
     match table
-        .optimize(lancedb::table::OptimizeAction::Index(
-            lancedb::table::OptimizeOptions::default(),
-        ))
+        .optimize(lancedb::table::OptimizeAction::Index(options))
         .await
     {
         Ok(_) => {
@@ -2538,5 +2574,24 @@ mod tests {
 
         let stats = table.index_stats("vector_idx").await.unwrap().unwrap();
         assert_eq!((stats.num_indexed_rows, stats.num_unindexed_rows), (260, 0));
+    }
+
+    #[tokio::test]
+    async fn test_optimize_rebuilds_legacy_fts_index() {
+        // lancedb 0.17 built the fixture's FTS index; lance 4 panics when compaction remaps it
+        let tmp = copy_fixture("lancedb-0.17-fts");
+        let db = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db.open_table("items").execute().await.unwrap();
+        // compaction rewrites the indexed fragment only when it has deletions
+        table.delete("id = 'b'").await.unwrap();
+
+        let (compacted, _) = optimize_table("items", &table, &CompactConfig::default()).await;
+        assert!(compacted);
+
+        let stats = table.index_stats("content_idx").await.unwrap().unwrap();
+        assert_eq!((stats.num_indexed_rows, stats.num_unindexed_rows), (2, 0));
     }
 }
