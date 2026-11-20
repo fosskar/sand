@@ -12,12 +12,12 @@ install_dir=${SAND_INSTALL_DIR:-$HOME/.local/bin}
 min_glibc=2.34
 
 die() {
-  echo "sand install: $*" >&2
-  exit 1
+	echo "sand install: $*" >&2
+	exit 1
 }
 
 unsupported() {
-  die "no prebuilt sand binary for $1; build it from source instead: cargo install --git $repo_url"
+	die "no prebuilt sand binary for $1; build it from source instead: cargo install --git $repo_url"
 }
 
 os=$(uname -s)
@@ -30,11 +30,11 @@ esac
 asset=sand-x86_64-linux.tar.gz
 
 if command -v curl >/dev/null; then
-  fetch() { curl -fsSL -o "$2" "$1"; }
+	fetch() { curl -fsSL -o "$2" "$1"; }
 elif command -v wget >/dev/null; then
-  fetch() { wget -q -O "$2" "$1"; }
+	fetch() { wget -q -O "$2" "$1"; }
 else
-  die "curl or wget is required"
+	die "curl or wget is required"
 fi
 
 tmp=$(mktemp -d)
@@ -43,11 +43,11 @@ trap 'rm -rf "$tmp"' EXIT
 fetch "$release_url/$asset" "$tmp/$asset"
 fetch "$release_url/SHA256SUMS" "$tmp/SHA256SUMS"
 (cd "$tmp" && grep "  $asset\$" SHA256SUMS | sha256sum -c -) >/dev/null ||
-  die "checksum of $asset does not match SHA256SUMS"
+	die "checksum of $asset does not match SHA256SUMS"
 tar -xzf "$tmp/$asset" -C "$tmp" sand
 # checked before installing, so a binary that cannot run does not replace a working one
 if ! output=$("$tmp/sand" --version 2>&1); then
-  die "the release binary does not run on this system: $output
+	die "the release binary does not run on this system: $output
 it is built on Ubuntu 22.04 and needs glibc $min_glibc or newer (ldd --version shows yours); build it from source instead: cargo install --git $repo_url"
 fi
 
