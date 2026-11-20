@@ -34,7 +34,7 @@ pub fn is_valid_id(s: &str) -> bool {
 
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Int64Array, RecordBatch,
-    RecordBatchIterator, StringArray,
+    RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{TimeZone, Utc};
@@ -189,6 +189,13 @@ impl Database {
         let db = connect(path.to_str().ok_or_else(|| {
             SandError::Database("Database path contains invalid UTF-8".to_string())
         })?)
+        // create tables as lancedb 0.17 did, so sand 0.6.0 and sediment 0.5.1 can read them
+        .database_options(
+            &lancedb::database::listing::ListingDatabaseOptions::builder()
+                .data_storage_version(lancedb::connection::LanceFileVersion::V2_0)
+                .enable_v2_manifest_paths(false)
+                .build(),
+        )
         .execute()
         .await
         .map_err(|e| SandError::Database(format!("Failed to connect to database: {}", e)))?;
@@ -351,14 +358,14 @@ impl Database {
             if !results.is_empty() {
                 let batches = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
                 new_table
-                    .add(Box::new(batches))
+                    .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                     .execute()
                     .await
                     .map_err(|e| SandError::Database(format!("Failed to restore items: {}", e)))?;
             }
 
             self.db
-                .drop_table("items_migrated")
+                .drop_table("items_migrated", &[])
                 .await
                 .map_err(|e| SandError::Database(format!("Failed to drop staging table: {}", e)))?;
             info!("Recovery case A completed");
@@ -369,16 +376,22 @@ impl Database {
             if has_old_schema {
                 // Case B: migration never completed, old data intact. Drop staging.
                 info!("Recovery case B: dropping incomplete staging table");
-                self.db.drop_table("items_migrated").await.map_err(|e| {
-                    SandError::Database(format!("Failed to drop staging table: {}", e))
-                })?;
+                self.db
+                    .drop_table("items_migrated", &[])
+                    .await
+                    .map_err(|e| {
+                        SandError::Database(format!("Failed to drop staging table: {}", e))
+                    })?;
                 // Migration will re-run in ensure_tables
             } else {
                 // Case C: migration completed, just cleanup staging
                 info!("Recovery case C: dropping leftover staging table");
-                self.db.drop_table("items_migrated").await.map_err(|e| {
-                    SandError::Database(format!("Failed to drop staging table: {}", e))
-                })?;
+                self.db
+                    .drop_table("items_migrated", &[])
+                    .await
+                    .map_err(|e| {
+                        SandError::Database(format!("Failed to drop staging table: {}", e))
+                    })?;
             }
         }
 
@@ -445,7 +458,7 @@ impl Database {
             .map_err(|e| SandError::Database(format!("Failed to list tables: {}", e)))?;
         if table_names.contains(&"items_migrated".to_string()) {
             self.db
-                .drop_table("items_migrated")
+                .drop_table("items_migrated", &[])
                 .await
                 .map_err(|e| SandError::Database(format!("Failed to drop stale staging: {}", e)))?;
         }
@@ -463,7 +476,7 @@ impl Database {
         if !new_batches.is_empty() {
             let batches = RecordBatchIterator::new(new_batches.into_iter().map(Ok), schema.clone());
             staging_table
-                .add(Box::new(batches))
+                .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                 .execute()
                 .await
                 .map_err(|e| {
@@ -478,7 +491,7 @@ impl Database {
             .map_err(|e| SandError::Database(format!("Failed to count staging rows: {}", e)))?;
         if staging_count != old_count {
             // Staging is incomplete — drop it and bail
-            let _ = self.db.drop_table("items_migrated").await;
+            let _ = self.db.drop_table("items_migrated", &[]).await;
             return Err(SandError::Database(format!(
                 "Staging row count mismatch: expected {}, got {}",
                 old_count, staging_count
@@ -487,7 +500,7 @@ impl Database {
 
         // Step 7: Drop old items (data is safe in staging)
         self.db
-            .drop_table("items")
+            .drop_table("items", &[])
             .await
             .map_err(|e| SandError::Database(format!("Failed to drop old items table: {}", e)))?;
 
@@ -511,7 +524,7 @@ impl Database {
         if !staging_data.is_empty() {
             let batches = RecordBatchIterator::new(staging_data.into_iter().map(Ok), schema);
             new_table
-                .add(Box::new(batches))
+                .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                 .execute()
                 .await
                 .map_err(|e| {
@@ -521,7 +534,7 @@ impl Database {
 
         // Step 9: Drop staging table (cleanup)
         self.db
-            .drop_table("items_migrated")
+            .drop_table("items_migrated", &[])
             .await
             .map_err(|e| SandError::Database(format!("Failed to drop staging table: {}", e)))?;
 
@@ -623,7 +636,7 @@ impl Database {
                 // so we rebuild to ensure newly stored items are searchable.
                 if row_count > 0 {
                     match table
-                        .create_index(&["content"], lancedb::index::Index::FTS(Default::default()))
+                        .create_index(&["content"], fts_index())
                         .replace(true)
                         .execute()
                         .await
@@ -701,7 +714,7 @@ impl Database {
             RecordBatchIterator::new(vec![Ok(batch)], Arc::new(item_schema(item.embedding.len())));
 
         table
-            .add(Box::new(batches))
+            .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
             .execute()
             .await
             .map_err(|e| SandError::Database(format!("Failed to store item: {}", e)))?;
@@ -790,7 +803,7 @@ impl Database {
             let schema = Arc::new(chunk_schema(embedder.dimension()));
             let batches = RecordBatchIterator::new(all_chunk_batches.into_iter().map(Ok), schema);
             chunks_table
-                .add(Box::new(batches))
+                .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
                 .execute()
                 .await
                 .map_err(|e| SandError::Database(format!("Failed to store chunks: {}", e)))?;
@@ -807,8 +820,9 @@ impl Database {
         query: &str,
         limit: usize,
     ) -> Option<std::collections::HashMap<String, f32>> {
-        let fts_query =
-            FullTextSearchQuery::new(query.to_string()).columns(Some(vec!["content".to_string()]));
+        let fts_query = FullTextSearchQuery::new(query.to_string())
+            .with_column("content".to_string())
+            .ok()?;
 
         let fts_results = table
             .query()
@@ -1309,90 +1323,97 @@ impl Database {
     pub async fn optimize_tables(&self, config: &CompactConfig) -> Result<CompactStats> {
         let mut stats = CompactStats::default();
 
-        for (label, table) in [("items", &self.items_table), ("chunks", &self.chunks_table)] {
-            let Some(table) = table else { continue };
-
-            // Phase 1: Compact — merge small files, materialize deletions
-            let compact_opts = lancedb::table::CompactionOptions {
-                target_rows_per_fragment: 1024,
-                materialize_deletions: true,
-                materialize_deletions_threshold: 0.0,
-                num_threads: config.num_threads,
-                ..Default::default()
-            };
-            match table
-                .optimize(lancedb::table::OptimizeAction::Compact {
-                    options: compact_opts,
-                    remap_options: None,
-                })
-                .await
-            {
-                Ok(s) => {
-                    if let Some(ref c) = s.compaction {
-                        info!(
-                            "{} compaction: {} fragments removed, {} new, {} files removed",
-                            label, c.fragments_removed, c.fragments_added, c.files_removed,
-                        );
-                    }
-                    match label {
-                        "items" => stats.items_compacted = s.compaction.is_some(),
-                        "chunks" => stats.chunks_compacted = s.compaction.is_some(),
-                        _ => {}
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("{} compaction failed: {}", label, e);
-                }
-            }
-
-            // Phase 2: Prune — remove old dataset versions
-            if !config.skip_prune {
-                let older_than = config.prune_older_than;
-                match table
-                    .optimize(lancedb::table::OptimizeAction::Prune {
-                        older_than,
-                        delete_unverified: Some(config.delete_unverified),
-                        error_if_tagged_old_versions: None,
-                    })
-                    .await
-                {
-                    Ok(s) => {
-                        if let Some(ref p) = s.prune {
-                            info!(
-                                "{} prune: {} bytes removed, {} old versions removed",
-                                label, p.bytes_removed, p.old_versions,
-                            );
-                        }
-                        match label {
-                            "items" => stats.items_pruned = s.prune.is_some(),
-                            "chunks" => stats.chunks_pruned = s.prune.is_some(),
-                            _ => {}
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("{} prune failed: {}", label, e);
-                    }
-                }
-            }
-
-            // Phase 3: Index — optimize indices for new data
-            match table
-                .optimize(lancedb::table::OptimizeAction::Index(
-                    lancedb::table::OptimizeOptions::default(),
-                ))
-                .await
-            {
-                Ok(_) => {
-                    info!("{} index optimization complete", label);
-                }
-                Err(e) => {
-                    tracing::warn!("{} index optimization failed: {}", label, e);
-                }
-            }
+        if let Some(table) = &self.items_table {
+            (stats.items_compacted, stats.items_pruned) =
+                optimize_table("items", table, config).await;
+        }
+        if let Some(table) = &self.chunks_table {
+            (stats.chunks_compacted, stats.chunks_pruned) =
+                optimize_table("chunks", table, config).await;
         }
 
         Ok(stats)
     }
+}
+
+/// Compact, prune and re-index one table; returns whether it was compacted and pruned.
+///
+/// A failing phase is logged and the next one still runs.
+async fn optimize_table(label: &str, table: &Table, config: &CompactConfig) -> (bool, bool) {
+    let mut compacted = false;
+    let mut pruned = false;
+
+    // Phase 1: Compact — merge small files, materialize deletions
+    let compact_opts = lancedb::table::CompactionOptions {
+        target_rows_per_fragment: 1024,
+        materialize_deletions: true,
+        materialize_deletions_threshold: 0.0,
+        num_threads: config.num_threads,
+        ..Default::default()
+    };
+    match table
+        .optimize(lancedb::table::OptimizeAction::Compact {
+            options: compact_opts,
+            remap_options: None,
+        })
+        .await
+    {
+        Ok(s) => {
+            if let Some(ref c) = s.compaction {
+                info!(
+                    "{} compaction: {} fragments removed, {} new, {} files removed",
+                    label, c.fragments_removed, c.fragments_added, c.files_removed,
+                );
+            }
+            compacted = s.compaction.is_some();
+        }
+        Err(e) => {
+            tracing::warn!("{} compaction failed: {}", label, e);
+        }
+    }
+
+    // Phase 2: Prune — remove old dataset versions
+    if !config.skip_prune {
+        let older_than = config.prune_older_than;
+        match table
+            .optimize(lancedb::table::OptimizeAction::Prune {
+                older_than,
+                delete_unverified: Some(config.delete_unverified),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+        {
+            Ok(s) => {
+                if let Some(ref p) = s.prune {
+                    info!(
+                        "{} prune: {} bytes removed, {} old versions removed",
+                        label, p.bytes_removed, p.old_versions,
+                    );
+                }
+                pruned = s.prune.is_some();
+            }
+            Err(e) => {
+                tracing::warn!("{} prune failed: {}", label, e);
+            }
+        }
+    }
+
+    // Phase 3: Index — optimize indices for new data
+    match table
+        .optimize(lancedb::table::OptimizeAction::Index(
+            lancedb::table::OptimizeOptions::default(),
+        ))
+        .await
+    {
+        Ok(_) => {
+            info!("{} index optimization complete", label);
+        }
+        Err(e) => {
+            tracing::warn!("{} index optimization failed: {}", label, e);
+        }
+    }
+
+    (compacted, pruned)
 }
 
 /// Configuration for table optimization.
@@ -1487,6 +1508,7 @@ pub async fn migrate_project_id(
             .await
             .map_err(|e| SandError::Database(format!("Failed to migrate items: {}", e)))?;
 
+        let updated = updated.rows_updated;
         total_updated += updated;
         info!(
             "Migrated {} items from project {} to {}",
@@ -1631,6 +1653,18 @@ fn item_to_batch(item: &Item) -> Result<RecordBatch> {
         ],
     )
     .map_err(|e| SandError::Database(format!("Failed to create batch: {}", e)))
+}
+
+/// The FTS index on `content`, rebuilt on every open.
+fn fts_index() -> lancedb::index::Index {
+    // the tokenizer defaults of lancedb 0.17; newer lance stems, drops stop words and folds ascii
+    lancedb::index::Index::FTS(
+        lancedb::index::scalar::FtsIndexBuilder::default()
+            .with_position(true)
+            .stem(false)
+            .remove_stop_words(false)
+            .ascii_folding(false),
+    )
 }
 
 fn batch_to_items(batch: &RecordBatch) -> Result<Vec<Item>> {
@@ -2033,7 +2067,10 @@ mod tests {
         let batch = old_item_batch("test-id-1", "old content");
         let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2106,7 +2143,10 @@ mod tests {
         let batch2 = old_item_batch("id-bbb", "second item content");
         let batches = RecordBatchIterator::new(vec![Ok(batch1), Ok(batch2)], schema);
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2177,7 +2217,10 @@ mod tests {
 
         let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
         db_conn
-            .create_table("items_migrated", Box::new(batches))
+            .create_table(
+                "items_migrated",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2219,7 +2262,10 @@ mod tests {
         let batch = old_item_batch("old-id", "old content");
         let batches = RecordBatchIterator::new(vec![Ok(batch)], old_schema);
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2298,7 +2344,10 @@ mod tests {
 
         let batches = RecordBatchIterator::new(vec![Ok(batch)], new_schema.clone());
         db_conn
-            .create_table("items", Box::new(batches))
+            .create_table(
+                "items",
+                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
+            )
             .execute()
             .await
             .unwrap();
@@ -2396,5 +2445,98 @@ mod tests {
             "Error should mention invalid project_id, got: {}",
             err_msg
         );
+    }
+
+    /// Copy `tests/fixtures/<name>` into a temporary directory.
+    fn copy_fixture(name: &str) -> tempfile::TempDir {
+        fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_dir(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        copy_dir(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+            tmp.path(),
+        );
+        tmp
+    }
+
+    #[tokio::test]
+    async fn test_opens_store_written_by_sediment_0_5_1() {
+        // lancedb 0.17 wrote the fixture (lance file format 2.0); dependency updates must keep reading it
+        let tmp = copy_fixture("sediment-0.5.1");
+        let db = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db.open_table("items").execute().await.unwrap();
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let mut contents: Vec<String> = batches
+            .iter()
+            .flat_map(|b| batch_to_items(b).unwrap())
+            .map(|item| item.content)
+            .collect();
+        contents.sort();
+        assert_eq!(
+            contents,
+            [
+                "[fact] fixture note one: written by sediment 0.5.1 with lancedb 0.17",
+                "[pref] fixture note two: an old store must open after a dependency update",
+            ]
+        );
+
+        // every open replaces the FTS index that the old version built
+        table
+            .create_index(&["content"], fts_index())
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+        let hits: Vec<RecordBatch> = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("dependency".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(hits.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_extends_legacy_vector_index() {
+        // lancedb 0.17 built the fixture's IVF_PQ index in lance's v1 format; lance 14 panicked when optimizing it
+        let tmp = copy_fixture("lancedb-0.17-ivf-pq");
+        let db = lancedb::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db.open_table("items").execute().await.unwrap();
+        let stats = table.index_stats("vector_idx").await.unwrap().unwrap();
+        assert_eq!((stats.num_indexed_rows, stats.num_unindexed_rows), (256, 4));
+
+        optimize_table("items", &table, &CompactConfig::default()).await;
+
+        let stats = table.index_stats("vector_idx").await.unwrap().unwrap();
+        assert_eq!((stats.num_indexed_rows, stats.num_unindexed_rows), (260, 0));
     }
 }

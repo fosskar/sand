@@ -111,8 +111,8 @@ async fn seed_database(n: usize, embedder: Arc<Embedder>) -> SeededDb {
         let _ = graph.add_node(&id, Some("bench-project"), now);
 
         // Add graph edges for ~30% of items
-        if i > 0 && rand::Rng::gen_bool(&mut rng, 0.3) {
-            let target_idx = rand::Rng::gen_range(&mut rng, 0..i);
+        if i > 0 && rand::RngExt::random_bool(&mut rng, 0.3) {
+            let target_idx = rand::RngExt::random_range(&mut rng, 0..i);
             let _ = graph.add_related_edge(&id, &item_ids[target_idx], 0.8, "bench");
         }
 
