@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
+use candle_nn::{Linear, Module, VarBuilder};
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::HFClientSync;
 use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
@@ -29,13 +29,15 @@ pub enum EmbeddingModel {
     BgeSmallEnV15,
     /// BAAI/bge-base-en-v1.5 (query prefix, no doc prefix, 768-dim)
     BgeBaseEnV15,
+    /// MongoDB/mdbr-leaf-ir (query prefix, no doc prefix, Dense layer to 768-dim, truncated to 384-dim)
+    MdbrLeafIr,
 }
 
 impl EmbeddingModel {
     /// Embedding dimension for this model
     pub fn embedding_dim(&self) -> usize {
         match self {
-            Self::AllMiniLmL6V2 | Self::E5SmallV2 | Self::BgeSmallEnV15 => 384,
+            Self::AllMiniLmL6V2 | Self::E5SmallV2 | Self::BgeSmallEnV15 | Self::MdbrLeafIr => 384,
             Self::BgeBaseEnV15 => 768,
         }
     }
@@ -47,6 +49,7 @@ impl EmbeddingModel {
             Self::E5SmallV2 => "intfloat/e5-small-v2",
             Self::BgeSmallEnV15 => "BAAI/bge-small-en-v1.5",
             Self::BgeBaseEnV15 => "BAAI/bge-base-en-v1.5",
+            Self::MdbrLeafIr => "MongoDB/mdbr-leaf-ir",
         }
     }
 
@@ -57,6 +60,7 @@ impl EmbeddingModel {
             Self::E5SmallV2 => "ffb93f3bd4047442299a41ebb6fa998a38507c52",
             Self::BgeSmallEnV15 => "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
             Self::BgeBaseEnV15 => "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a",
+            Self::MdbrLeafIr => "4262131b32c3182bd06e67e92ae69d7bd66e0c5c",
         }
     }
 
@@ -73,6 +77,18 @@ impl EmbeddingModel {
             Self::BgeBaseEnV15 => {
                 "c7c1988aae201f80cf91a5dbbd5866409503b89dcaba877ca6dba7dd0a5167d7"
             }
+            Self::MdbrLeafIr => "82691b5531ec8323546aa2246f8a5de073aff3bd0d7d98bec0619d2e51ee1297",
+        }
+    }
+
+    /// Expected SHA-256 hash of 2_Dense/model.safetensors, for models whose
+    /// sentence-transformers pipeline applies a Dense layer after pooling
+    pub fn dense_sha256(&self) -> Option<&'static str> {
+        match self {
+            Self::MdbrLeafIr => {
+                Some("b3e7c0e1ef65e39a5ef1ca3bc5e4aef5feafb6e204bd161503145ed062f12c69")
+            }
+            _ => None,
         }
     }
 
@@ -89,6 +105,7 @@ impl EmbeddingModel {
             Self::BgeBaseEnV15 => {
                 "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
             }
+            Self::MdbrLeafIr => "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0",
         }
     }
 
@@ -105,6 +122,7 @@ impl EmbeddingModel {
             Self::BgeBaseEnV15 => {
                 "bc00af31a4a31b74040d73370aa83b62da34c90b75eb77bfa7db039d90abd591"
             }
+            Self::MdbrLeafIr => "258407cfa27c7e1e502a9c312abebb4f5241bf226972ffc366287f370a3567f1",
         }
     }
 
@@ -113,9 +131,9 @@ impl EmbeddingModel {
         match self {
             Self::AllMiniLmL6V2 => std::borrow::Cow::Borrowed(text),
             Self::E5SmallV2 => std::borrow::Cow::Owned(format!("query: {text}")),
-            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 => std::borrow::Cow::Owned(format!(
-                "Represent this sentence for searching relevant passages: {text}"
-            )),
+            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 | Self::MdbrLeafIr => std::borrow::Cow::Owned(
+                format!("Represent this sentence for searching relevant passages: {text}"),
+            ),
         }
     }
 
@@ -124,7 +142,9 @@ impl EmbeddingModel {
         match self {
             Self::AllMiniLmL6V2 => std::borrow::Cow::Borrowed(text),
             Self::E5SmallV2 => std::borrow::Cow::Owned(format!("passage: {text}")),
-            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 => std::borrow::Cow::Borrowed(text),
+            Self::BgeSmallEnV15 | Self::BgeBaseEnV15 | Self::MdbrLeafIr => {
+                std::borrow::Cow::Borrowed(text)
+            }
         }
     }
 
@@ -135,6 +155,7 @@ impl EmbeddingModel {
             "e5-small-v2" => Some(Self::E5SmallV2),
             "bge-small-en-v1.5" => Some(Self::BgeSmallEnV15),
             "bge-base-en-v1.5" => Some(Self::BgeBaseEnV15),
+            "mdbr-leaf-ir" => Some(Self::MdbrLeafIr),
             _ => None,
         }
     }
@@ -149,6 +170,7 @@ impl EmbeddingModel {
 /// no cross-thread mutation concerns.
 pub struct Embedder {
     model: BertModel,
+    dense: Option<Linear>,
     tokenizer: Tokenizer,
     device: Device,
     embedding_model: EmbeddingModel,
@@ -172,8 +194,11 @@ impl Embedder {
         info!("Loading embedding model: {}", model_id);
 
         let device = Device::Cpu;
-        let (model_path, tokenizer_path, config_path) =
-            download_model(model_id, embedding_model.revision())?;
+        let (model_path, tokenizer_path, config_path, dense_path) = download_model(
+            model_id,
+            embedding_model.revision(),
+            embedding_model.dense_sha256().is_some(),
+        )?;
 
         // Load config
         let config_str = std::fs::read_to_string(&config_path)
@@ -229,10 +254,29 @@ impl Embedder {
         let model = BertModel::load(vb, &config)
             .map_err(|e| SandError::ModelLoading(format!("Failed to load model: {}", e)))?;
 
+        let dense = match (dense_path, embedding_model.dense_sha256()) {
+            (Some(path), Some(hash)) => {
+                let bytes = std::fs::read(&path).map_err(|e| {
+                    SandError::ModelLoading(format!("Failed to read Dense weights: {}", e))
+                })?;
+                verify_bytes_hash(&bytes, hash, "2_Dense/model.safetensors")?;
+                let mut tensors =
+                    candle_core::safetensors::load_buffer(&bytes, &device).map_err(|e| {
+                        SandError::ModelLoading(format!("Failed to load Dense weights: {}", e))
+                    })?;
+                let weight = tensors.remove("linear.weight").ok_or_else(|| {
+                    SandError::ModelLoading("Dense weights lack linear.weight".into())
+                })?;
+                Some(Linear::new(weight, tensors.remove("linear.bias")))
+            }
+            _ => None,
+        };
+
         info!("Embedding model loaded successfully");
 
         Ok(Self {
             model,
+            dense,
             tokenizer,
             device,
             embedding_model,
@@ -327,8 +371,17 @@ impl Embedder {
             .broadcast_div(&sum_mask)
             .map_err(|e| SandError::Embedding(format!("Division failed: {}", e)))?;
 
+        // Matryoshka truncation keeps the first values of the Dense output
+        let pooled = match &self.dense {
+            Some(dense) => dense
+                .forward(&mean_embeddings)
+                .and_then(|t| t.narrow(1, 0, self.dimension()))
+                .map_err(|e| SandError::Embedding(format!("Dense layer failed: {}", e)))?,
+            None => mean_embeddings,
+        };
+
         // L2 normalize embeddings
-        let final_embeddings = normalize_l2(&mean_embeddings)?;
+        let final_embeddings = normalize_l2(&pooled)?;
 
         // Convert to Vec<Vec<f32>>
         let embeddings_vec: Vec<Vec<f32>> = final_embeddings
@@ -372,7 +425,11 @@ impl Embedder {
 }
 
 /// Download model files from Hugging Face Hub
-fn download_model(model_id: &str, revision: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
+fn download_model(
+    model_id: &str,
+    revision: &str,
+    dense: bool,
+) -> Result<(PathBuf, PathBuf, PathBuf, Option<PathBuf>)> {
     let api = HFClientSync::new()
         .map_err(|e| SandError::ModelLoading(format!("Failed to create HF API: {}", e)))?;
 
@@ -396,7 +453,15 @@ fn download_model(model_id: &str, revision: &str) -> Result<(PathBuf, PathBuf, P
     let config_path = get("config.json")
         .map_err(|e| SandError::ModelLoading(format!("Failed to download config: {}", e)))?;
 
-    Ok((model_path, tokenizer_path, config_path))
+    let dense_path = if dense {
+        Some(get("2_Dense/model.safetensors").map_err(|e| {
+            SandError::ModelLoading(format!("Failed to download Dense weights: {}", e))
+        })?)
+    } else {
+        None
+    };
+
+    Ok((model_path, tokenizer_path, config_path, dense_path))
 }
 
 /// Verify the SHA-256 hash of a file against an expected value.
@@ -593,6 +658,20 @@ mod tests {
             "BGE-base document embedding should equal raw embedding (no prefix)"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    #[ignore] // Requires model download
+    fn test_dense_truncation_matches_sentence_transformers() -> Result<()> {
+        let embedder = Embedder::with_embedding_model(EmbeddingModel::MdbrLeafIr)?;
+        let emb = embedder.embed_query("What database do we use?")?;
+        assert_eq!(emb.len(), 384);
+        // first values of SentenceTransformer("MongoDB/mdbr-leaf-ir").encode(..., prompt_name="query",
+        // truncate_dim=384, normalize_embeddings=True)
+        for (got, want) in emb.iter().zip([-0.0131, 0.0369, -0.0369, -0.0232]) {
+            assert!((got - want).abs() < 1e-3, "{got} != {want}");
+        }
         Ok(())
     }
 

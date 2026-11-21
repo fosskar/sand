@@ -23,7 +23,7 @@ Environment variables:
                        Useful for ephemeral/isolated storage:
                          SAND_DB=/tmp/task-xyz sand store \"...\"
   SAND_EMBEDDING_MODEL Override embedding model (default: all-MiniLM-L6-v2).
-                       Options: all-MiniLM-L6-v2, bge-small-en-v1.5
+                       Options: all-MiniLM-L6-v2, bge-small-en-v1.5, mdbr-leaf-ir
   Each SAND_* variable falls back to SEDIMENT_* when it is unset.
 ")]
 struct Cli {

@@ -241,7 +241,7 @@ All commands support `--json` for machine-readable output.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SAND_DB` | `~/.sand/data` | Override database path. Useful for ephemeral or isolated storage. |
-| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model (`all-MiniLM-L6-v2`, `bge-small-en-v1.5`). |
+| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model (`all-MiniLM-L6-v2`, `bge-small-en-v1.5`, `mdbr-leaf-ir`). |
 
 Example — use a throwaway database for a task:
 
