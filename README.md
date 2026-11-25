@@ -67,6 +67,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 - A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
 - Near-duplicates were merged, and similar notes linked, only after a recall in the MCP server, so notes stored through the CLI were rarely or never merged. Every store now starts consolidation: the MCP server runs it in the background, `sand store` runs one batch before it exits.
+- Consolidation deleted a note when another note reached 0.95 cosine similarity, even when the two stated different facts, such as two rate limits that differ only in their numbers. Now it deletes a note only when its text is the same as the other's after trimming, collapsing whitespace and lowercasing; similar notes are linked and both stay.
 - Replacing a note with the MCP `store` tool did not count as a validation of the new note, while `store --replace` on the command line did. Both count it now; validations raise the trust bonus of a note in recall.
 - The build failed clippy on the current Rust toolchain.
 
@@ -268,7 +269,7 @@ All local, embedded, zero config:
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring for better retrieval quality.
 - **Project scoping**: Automatic context isolation between projects. Different-project items receive a similarity penalty.
 - **Relationship graph**: Items linked via RELATED, SUPERSEDES, and CO_ACCESSED edges. Recall expands results with 1-hop graph neighbors and co-access suggestions.
-- **Background consolidation**: Near-duplicates (≥0.95 similarity) auto-merged; similar items (0.85–0.95) linked.
+- **Background consolidation**: Notes with the same text (ignoring case and whitespace) merged; similar notes (≥0.85 similarity) linked.
 - **Type-aware chunking**: Intelligent splitting for markdown, code, JSON, YAML, and plain text.
 - **Conflict detection**: Items with ≥0.85 similarity flagged on store.
 - **Cross-project recall**: Results from other projects flagged.

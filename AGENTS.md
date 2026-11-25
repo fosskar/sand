@@ -85,7 +85,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 - **`src/item.rs`** - Unified Item, Chunk, SearchResult, StoreResult, and ConflictInfo types
 - **`src/access.rs`** - SQLite-based access tracking, validation counting, and memory decay scoring
 - **`src/graph.rs`** - SQLite graph store: relationship tracking (RELATED, SUPERSEDES, CO_ACCESSED edges)
-- **`src/consolidation.rs`** - Background consolidation: auto-merging near-duplicates, linking similar items
+- **`src/consolidation.rs`** - Background consolidation: merging notes with the same text, linking similar items
 - **`src/compaction.rs`** - Background compaction of LanceDB storage: compacts fragments, prunes old versions, re-optimizes indices
 - **`src/error.rs`** - SandError enum with typed error variants (Database, Embedding, Arrow, etc.)
 - **`src/retry.rs`** - Retry utilities with exponential backoff (3 attempts, 100ms–2s)
@@ -102,7 +102,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 1. **Store**: Content → Embedder (384-dim vector) → LanceDB storage → Graph node creation → Conflict detection → Consolidation queue → Consolidation (MCP server: background task; CLI: one batch when the store queued candidates)
 2. **Chunking**: Long content (>1000 chars) → Type-aware splitting → Individual chunk embeddings
 3. **Recall**: Query → Embedder → Vector similarity search → Project boosting → Decay scoring → Trust-weighted re-ranking → Graph backfill → 1-hop graph expansion → Co-access suggestions → Cross-project flagging → Background consolidation + co-access recording
-4. **Consolidation** (after store and recall): Queue candidates → >=0.95 similarity: merge (delete old, transfer edges, SUPERSEDES edge) → 0.85-0.95: link (RELATED edge)
+4. **Consolidation** (after store and recall): Queue candidates → same text after trimming, collapsing whitespace and lowercasing: merge (delete old, transfer edges, SUPERSEDES edge) → otherwise: link (RELATED edge)
 5. **Clustering** (every 10th recall): Triangle detection in graph → RELATED edges labelled `cluster-<id>`
 
 ### Environment Variables
@@ -213,7 +213,7 @@ CREATE TABLE projects (
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 36 tests are ignored in total and none of them run in the Nix build
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 37 tests are ignored in total and none of them run in the Nix build
 - Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
 - `tests/cli_global_scope.rs`, `tests/cli_compat.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
 - Use `tempfile` crate for database tests to avoid polluting real data
