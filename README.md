@@ -68,7 +68,6 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 - A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
 - Near-duplicates were merged, and similar notes linked, only after a recall in the MCP server, so notes stored through the CLI were rarely or never merged. Every store now starts consolidation: the MCP server runs it in the background, `sand store` runs one batch before it exits.
 - Consolidation deleted a note when another note reached 0.95 cosine similarity, even when the two stated different facts, such as two rate limits that differ only in their numbers. Now it deletes a note only when its text is the same as the other's after trimming, collapsing whitespace and lowercasing; similar notes are linked and both stay.
-- Replacing a note with the MCP `store` tool did not count as a validation of the new note, while `store --replace` on the command line did. Both count it now; validations raise the trust bonus of a note in recall.
 - The build failed clippy on the current Rust toolchain.
 
 ### Removed
@@ -77,6 +76,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 - The `init` command, which wrote usage instructions into `CLAUDE.md`. The MCP tool descriptions and the server instructions carry that guidance. Sediment and sand 0.6.0 had the command.
 - The `project` command, which printed the project ID of the current directory, and the `SAND_PROJECT_ID` setting, which replaced that ID for CLI commands. sand 0.6.0 had both.
 - The access-frequency factor in recall ranking, `1 + 0.1·ln(1 + access_count)`. Every recall counted as an access for each note it returned, so notes returned by earlier queries ranked higher in later unrelated ones. Without it the upstream benchmark finds the expected note first for 51.0% of queries instead of 48.0%.
+- The trust bonus in recall ranking, `1 + 0.05·ln(1 + validation_count) + 0.005·edge_count`. Every recall in the MCP server adds co-access edges between its top results, so the bonus favoured notes that earlier recalls returned; without it the upstream benchmark finds the expected note first for 52.0% of queries instead of 51.0%. A replace no longer counts as a validation.
 - The `consolidate` command, which drained the consolidation queue by hand. Consolidation runs after every store now. sand 0.6.0 had the command.
 
 ### Compatibility
@@ -266,7 +266,6 @@ All local, embedded, zero config:
 ### Key Features
 
 - **Memory decay**: Results re-ranked by freshness (30-day half-life). Old memories rank lower but are never auto-deleted.
-- **Trust-weighted scoring**: Validated and well-connected memories score higher.
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring for better retrieval quality.
 - **Project scoping**: Automatic context isolation between projects. Different-project items receive a similarity penalty.
 - **Relationship graph**: Items linked via RELATED, SUPERSEDES, and CO_ACCESSED edges. Recall expands results with 1-hop graph neighbors and co-access suggestions.

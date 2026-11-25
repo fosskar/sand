@@ -441,58 +441,6 @@ impl GraphStore {
         Ok(map)
     }
 
-    /// Get edge counts for multiple items in a single query.
-    ///
-    /// Returns a map from item ID to its total edge count (all edge types).
-    pub fn get_edge_counts(&self, ids: &[&str]) -> Result<std::collections::HashMap<String, u32>> {
-        if ids.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-
-        // Build a VALUES CTE for the input IDs
-        let unions: String = (1..=ids.len())
-            .map(|i| {
-                if i == 1 {
-                    format!("SELECT ?{} AS id", i)
-                } else {
-                    format!("UNION ALL SELECT ?{}", i)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        // Count edges where the item appears on either side
-        let sql = format!(
-            "SELECT ids.id, COUNT(e.rowid) FROM ({unions}) ids
-            LEFT JOIN graph_edges e ON e.from_id = ids.id OR e.to_id = ids.id
-            GROUP BY ids.id"
-        );
-
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| {
-            SandError::Database(format!("Failed to prepare edge_counts query: {}", e))
-        })?;
-
-        let params: Vec<&dyn rusqlite::types::ToSql> = ids
-            .iter()
-            .map(|id| id as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let rows = stmt
-            .query_map(params.as_slice(), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
-            })
-            .map_err(|e| SandError::Database(format!("Failed to query edge_counts: {}", e)))?;
-
-        let mut map = std::collections::HashMap::new();
-        for row in rows {
-            let (id, count) =
-                row.map_err(|e| SandError::Database(format!("Failed to read edge_count: {}", e)))?;
-            map.insert(id, count);
-        }
-
-        Ok(map)
-    }
-
     /// Migrate all graph nodes from one project ID to another.
     ///
     /// Used when a project's ID changes (e.g., UUID→git root commit hash).
@@ -577,18 +525,6 @@ mod tests {
                 connections.push(r);
             }
             Ok(connections)
-        }
-
-        fn get_edge_count(&self, item_id: &str) -> Result<u32> {
-            let count: i64 = self
-                .conn
-                .query_row(
-                    "SELECT COUNT(*) FROM graph_edges WHERE from_id = ?1 OR to_id = ?1",
-                    params![item_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| SandError::Database(format!("Failed to count edges: {}", e)))?;
-            Ok(count as u32)
         }
     }
 
@@ -747,39 +683,5 @@ mod tests {
             assert!(!neighbors.contains(&"A".to_string()));
             assert!(!neighbors.contains(&"B".to_string()));
         }
-    }
-
-    #[test]
-    fn test_get_edge_counts() {
-        let graph = open_test_graph();
-        let now = chrono::Utc::now().timestamp();
-        graph.add_node("X", Some("proj"), now).unwrap();
-        graph.add_node("Y", Some("proj"), now).unwrap();
-        graph.add_node("Z", Some("proj"), now).unwrap();
-
-        graph.add_related_edge("X", "Y", 0.9, "test").unwrap();
-        graph.add_related_edge("X", "Z", 0.9, "test").unwrap();
-        graph.add_related_edge("Y", "Z", 0.9, "test").unwrap();
-
-        let counts = graph.get_edge_counts(&["X", "Y", "Z"]).unwrap();
-
-        // Verify batch counts match individual counts
-        assert_eq!(
-            counts.get("X").copied().unwrap_or(0),
-            graph.get_edge_count("X").unwrap()
-        );
-        assert_eq!(
-            counts.get("Y").copied().unwrap_or(0),
-            graph.get_edge_count("Y").unwrap()
-        );
-        assert_eq!(
-            counts.get("Z").copied().unwrap_or(0),
-            graph.get_edge_count("Z").unwrap()
-        );
-
-        // X has 2 edges (X-Y, X-Z), Y has 2 (X-Y, Y-Z), Z has 2 (X-Z, Y-Z)
-        assert_eq!(counts["X"], 2);
-        assert_eq!(counts["Y"], 2);
-        assert_eq!(counts["Z"], 2);
     }
 }

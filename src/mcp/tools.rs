@@ -871,28 +871,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore] // requires model download
-    async fn test_store_replace_id_records_validation() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");
-
-        let old_id = store_id(
-            &execute_tool(&ctx, "store", Some(json!({ "content": "first version" }))).await,
-        );
-        let new_id = store_id(
-            &execute_tool(
-                &ctx,
-                "store",
-                Some(json!({ "content": "second version", "replace_id": old_id })),
-            )
-            .await,
-        );
-
-        let tracker = crate::access::AccessTracker::open(&tmp.path().join("access.db")).unwrap();
-        assert_eq!(tracker.get_validation_count(&new_id).unwrap(), 1);
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
     async fn test_store_replace_id_global_scope() {
         let tmp = tempfile::TempDir::new().unwrap();
         let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");

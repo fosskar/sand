@@ -230,14 +230,6 @@ impl Backend for LocalBackend {
                     tracing::warn!("replace: transfer_edges failed: {}", e);
                 }
 
-                // a replacement confirms the note, which raises its trust bonus in recall
-                if let Ok(tracker) = AccessTracker::open(&self.access_db_path) {
-                    let created_at = chrono::Utc::now().timestamp();
-                    if let Err(e) = tracker.record_validation(&new_id, created_at) {
-                        tracing::warn!("replace: record_validation failed: {}", e);
-                    }
-                }
-
                 let deleted = match db.delete_item(&old_id).await {
                     Ok(true) => true,
                     Ok(false) => {
@@ -467,7 +459,7 @@ pub struct RecallResult {
     pub results: Vec<crate::item::SearchResult>,
     pub graph_expanded: Vec<Value>,
     pub suggested: Vec<Value>,
-    /// Raw (pre-decay/trust) similarity scores, keyed by item ID
+    /// Raw (pre-decay) similarity scores, keyed by item ID
     pub raw_similarities: std::collections::HashMap<String, f32>,
 }
 
@@ -514,26 +506,16 @@ pub async fn recall_pipeline(
     if config.enable_decay_scoring {
         let item_ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
         let decay_data = tracker.get_decay_data(&item_ids).unwrap_or_default();
-        let edge_counts = graph.get_edge_counts(&item_ids).unwrap_or_default();
         let now = chrono::Utc::now().timestamp();
 
         for result in &mut results {
             raw_similarities.insert(result.id.clone(), result.similarity);
 
             let created_at = result.created_at.timestamp();
-            let (last_accessed, validation_count) = match decay_data.get(&result.id) {
-                Some(data) => (Some(data.last_accessed_at), data.validation_count),
-                None => (None, 0),
-            };
+            let last_accessed = decay_data.get(&result.id).map(|data| data.last_accessed_at);
 
-            let base_score = score_with_decay(result.similarity, now, created_at, last_accessed);
-
-            let edge_count = edge_counts.get(&result.id).copied().unwrap_or(0);
-            let trust_bonus = 1.0
-                + 0.05 * (1.0 + validation_count as f64).ln() as f32
-                + 0.005 * edge_count as f32;
-
-            result.similarity = (base_score * trust_bonus).min(1.0);
+            result.similarity =
+                score_with_decay(result.similarity, now, created_at, last_accessed).min(1.0);
         }
 
         results.sort_by(|a, b| {
