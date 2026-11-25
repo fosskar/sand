@@ -1565,21 +1565,14 @@ pub async fn migrate_project_id(
 /// Formula: `similarity * freshness`
 /// - freshness = 1.0 / (1.0 + age_days / 30.0)  (hyperbolic decay, 0.5 at 30 days)
 ///
-/// `last_accessed_at` and `created_at` are unix timestamps.
-/// If no access record exists, pass `None` and use `created_at` for age.
-pub fn score_with_decay(
-    similarity: f32,
-    now: i64,
-    created_at: i64,
-    last_accessed_at: Option<i64>,
-) -> f32 {
+/// `now` and `created_at` are unix timestamps; age counts from creation, so a recall cannot make an old version look new.
+pub fn score_with_decay(similarity: f32, now: i64, created_at: i64) -> f32 {
     // Guard against NaN/Inf from corrupted data
     if !similarity.is_finite() {
         return 0.0;
     }
 
-    let reference_time = last_accessed_at.unwrap_or(created_at);
-    let age_secs = (now - reference_time).max(0) as f64;
+    let age_secs = (now - created_at).max(0) as f64;
     let age_days = age_secs / 86400.0;
 
     let freshness = 1.0 / (1.0 + age_days / 30.0);
@@ -1876,7 +1869,7 @@ mod tests {
     fn test_score_with_decay_fresh_item() {
         let now = 1700000000i64;
         let created = now; // just created
-        let score = score_with_decay(0.8, now, created, None);
+        let score = score_with_decay(0.8, now, created);
         // freshness = 1.0
         let expected = 0.8;
         assert!((score - expected).abs() < 0.001, "got {}", score);
@@ -1886,27 +1879,17 @@ mod tests {
     fn test_score_with_decay_30_day_old() {
         let now = 1700000000i64;
         let created = now - 30 * 86400; // 30 days old
-        let score = score_with_decay(0.8, now, created, None);
+        let score = score_with_decay(0.8, now, created);
         // freshness = 1/(1+1) = 0.5
         let expected = 0.8 * 0.5;
         assert!((score - expected).abs() < 0.001, "got {}", score);
     }
 
     #[test]
-    fn test_score_with_decay_recent_access() {
-        let now = 1700000000i64;
-        let created = now - 30 * 86400;
-        let last_accessed = now; // just accessed
-        let score = score_with_decay(0.8, now, created, Some(last_accessed));
-        // freshness = 1.0 (just accessed)
-        assert!((score - 0.8).abs() < 0.001, "got {}", score);
-    }
-
-    #[test]
     fn test_score_with_decay_old_and_unused() {
         let now = 1700000000i64;
         let created = now - 90 * 86400; // 90 days old
-        let score = score_with_decay(0.8, now, created, None);
+        let score = score_with_decay(0.8, now, created);
         // freshness = 1/(1+3) = 0.25
         let expected = 0.8 * 0.25;
         assert!((score - expected).abs() < 0.001, "got {}", score);

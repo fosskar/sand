@@ -6,7 +6,7 @@ sand is based on [Sediment](https://github.com/rendro/sediment) by [rendro](http
 
 The text below is adapted from Sediment's documentation; the benchmark numbers in it were measured by the original author on Sediment.
 
-Combines vector search, a relationship graph, and access tracking into a unified memory intelligence layer — all running locally as a single binary.
+Combines vector search and a relationship graph into a unified memory intelligence layer — all running locally as a single binary.
 
 ## Why sand?
 
@@ -68,6 +68,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 - A note stored with scope `global` from inside a project was saved as a project note: `list --scope global` missed it, and other projects saw it as cross-project and could not forget it.
 - Near-duplicates were merged, and similar notes linked, only after a recall in the MCP server, so notes stored through the CLI were rarely or never merged. Every store now starts consolidation: the MCP server runs it in the background, `sand store` runs one batch before it exits.
 - Consolidation deleted a note when another note reached 0.95 cosine similarity, even when the two stated different facts, such as two rate limits that differ only in their numbers. Now it deletes a note only when its text is the same as the other's after trimming, collapsing whitespace and lowercasing; similar notes are linked and both stay.
+- Recall measured a note's age from its last recall, and every recall reset that time for all notes it returned. Once a query had returned an old and a new version of a fact, both looked new and the newer one no longer ranked first: in the upstream temporal test, asking each query a second time put the newest version first in 16% of cases instead of 100%. Age now counts from when the note was stored, and recall no longer writes to `access.db`.
 - The build failed clippy on the current Rust toolchain.
 
 ### Removed
@@ -83,7 +84,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 These stay permanently:
 
-- sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged apart from the added `projects` table. It never moves or copies the database.
+- sand reads and writes the same database format: the LanceDB tables and `access.db` are unchanged apart from the added `projects` table. sand no longer reads or writes the `access_log` table of `access.db`; Sediment and sand 0.6.0 still use it. It never moves or copies the database.
 - Project IDs that Sediment stored in `.sediment/config`, in the project directory or in the central state next to the database, are imported once, so the project ID stays the same. A `.sediment/` directory still marks a project root. The files are only read, never changed or deleted.
 
 These old names are accepted until 1.0 and then removed. While sand uses one of them, it prints one line per process on stderr that names the replacement.
@@ -197,7 +198,7 @@ Add to `~/.zed/settings.json` on macOS or `~/.config/zed/settings.json` on Linux
 
 ## Harness integration
 
-`sand hook recall` adds the memories that match the first prompt of a session to the model context, so recall does not depend on the model calling the `recall` tool. It reads the `UserPromptSubmit` hook JSON of Claude Code and Codex on stdin and uses `prompt`, `cwd` (for the project) and `session_id`. On stdout it prints a `<recalled_memories>` block with at most 3 notes whose similarity before decay scoring is at least 0.5, or nothing. It recalls on the first prompt of a session and on the next ones while nothing matched, 5 prompts at most; the count per session is kept in `$XDG_RUNTIME_DIR/sand-recall` (or `/tmp/sand-recall`). `--limit`, `--min-similarity` and `--max-tries` change these values. A hook recall counts as an access for decay scoring, the same as `sand recall`.
+`sand hook recall` adds the memories that match the first prompt of a session to the model context, so recall does not depend on the model calling the `recall` tool. It reads the `UserPromptSubmit` hook JSON of Claude Code and Codex on stdin and uses `prompt`, `cwd` (for the project) and `session_id`. On stdout it prints a `<recalled_memories>` block with at most 3 notes whose similarity before decay scoring is at least 0.5, or nothing. It recalls on the first prompt of a session and on the next ones while nothing matched, 5 prompts at most; the count per session is kept in `$XDG_RUNTIME_DIR/sand-recall` (or `/tmp/sand-recall`). `--limit`, `--min-similarity` and `--max-tries` change these values.
 
 For Claude Code, add the hook to `~/.claude/settings.json`; for Codex, the same `hooks` object goes into `~/.codex/hooks.json`:
 
@@ -261,11 +262,11 @@ The `--db` CLI flag takes the same value and overrides the env var if both are s
 All local, embedded, zero config:
 
 - **LanceDB** — Vector embeddings and semantic similarity search
-- **SQLite** (`access.db`) — Relationship graph, access tracking, decay scoring, consolidation queue
+- **SQLite** (`access.db`) — Relationship graph, consolidation queue, project IDs
 
 ### Key Features
 
-- **Memory decay**: Results re-ranked by freshness (30-day half-life). Old memories rank lower but are never auto-deleted.
+- **Memory decay**: Results re-ranked by age since the note was stored (score halved at 30 days). Old memories rank lower but are never auto-deleted.
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring for better retrieval quality.
 - **Project scoping**: Automatic context isolation between projects. Different-project items receive a similarity penalty.
 - **Relationship graph**: Items linked via RELATED, SUPERSEDES, and CO_ACCESSED edges. Recall expands results with 1-hop graph neighbors and co-access suggestions.
@@ -302,7 +303,7 @@ Benchmarked against 5 alternatives with 1,000 memories and 200 queries. See [BEN
 ### Data Location
 
 - Vector store: `~/.sand/data/`
-- Graph + access tracking: `~/.sand/access.db`
+- Graph, consolidation queue and project IDs: `~/.sand/access.db`
 
 Everything runs locally. Your data never leaves your machine.
 
