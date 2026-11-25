@@ -13,7 +13,6 @@ use crate::error::{Result, SandError};
 /// Combined access and validation data for decay scoring.
 #[derive(Debug, Clone)]
 pub struct DecayData {
-    pub access_count: u32,
     pub last_accessed_at: i64,
     pub created_at: i64,
     pub validation_count: u32,
@@ -148,7 +147,7 @@ impl AccessTracker {
             .map(|(i, _)| format!("?{}", i + 1))
             .collect();
         let sql = format!(
-            "SELECT item_id, access_count, last_accessed_at, created_at, COALESCE(validation_count, 0) FROM access_log WHERE item_id IN ({})",
+            "SELECT item_id, last_accessed_at, created_at, COALESCE(validation_count, 0) FROM access_log WHERE item_id IN ({})",
             placeholders.join(", ")
         );
 
@@ -167,10 +166,9 @@ impl AccessTracker {
                 Ok((
                     row.get::<_, String>(0)?,
                     DecayData {
-                        access_count: row.get::<_, u32>(1)?,
-                        last_accessed_at: row.get::<_, i64>(2)?,
-                        created_at: row.get::<_, i64>(3)?,
-                        validation_count: row.get::<_, u32>(4)?,
+                        last_accessed_at: row.get::<_, i64>(1)?,
+                        created_at: row.get::<_, i64>(2)?,
+                        validation_count: row.get::<_, u32>(3)?,
                     },
                 ))
             })

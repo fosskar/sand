@@ -521,22 +521,12 @@ pub async fn recall_pipeline(
             raw_similarities.insert(result.id.clone(), result.similarity);
 
             let created_at = result.created_at.timestamp();
-            let (access_count, last_accessed, validation_count) = match decay_data.get(&result.id) {
-                Some(data) => (
-                    data.access_count,
-                    Some(data.last_accessed_at),
-                    data.validation_count,
-                ),
-                None => (0, None, 0),
+            let (last_accessed, validation_count) = match decay_data.get(&result.id) {
+                Some(data) => (Some(data.last_accessed_at), data.validation_count),
+                None => (None, 0),
             };
 
-            let base_score = score_with_decay(
-                result.similarity,
-                now,
-                created_at,
-                access_count,
-                last_accessed,
-            );
+            let base_score = score_with_decay(result.similarity, now, created_at, last_accessed);
 
             let edge_count = edge_counts.get(&result.id).copied().unwrap_or(0);
             let trust_bonus = 1.0

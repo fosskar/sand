@@ -76,6 +76,7 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 - The Homebrew formula, the macOS binaries and the crates.io package. A GitHub Actions workflow builds the Linux x86_64 release binary again, and `install.sh` installs it; other systems install with `cargo install` or the Nix flake.
 - The `init` command, which wrote usage instructions into `CLAUDE.md`. The MCP tool descriptions and the server instructions carry that guidance. Sediment and sand 0.6.0 had the command.
 - The `project` command, which printed the project ID of the current directory, and the `SAND_PROJECT_ID` setting, which replaced that ID for CLI commands. sand 0.6.0 had both.
+- The access-frequency factor in recall ranking, `1 + 0.1·ln(1 + access_count)`. Every recall counted as an access for each note it returned, so notes returned by earlier queries ranked higher in later unrelated ones. Without it the upstream benchmark finds the expected note first for 51.0% of queries instead of 48.0%.
 - The `consolidate` command, which drained the consolidation queue by hand. Consolidation runs after every store now. sand 0.6.0 had the command.
 
 ### Compatibility
@@ -264,7 +265,7 @@ All local, embedded, zero config:
 
 ### Key Features
 
-- **Memory decay**: Results re-ranked by freshness (30-day half-life) and access frequency. Old memories rank lower but are never auto-deleted.
+- **Memory decay**: Results re-ranked by freshness (30-day half-life). Old memories rank lower but are never auto-deleted.
 - **Trust-weighted scoring**: Validated and well-connected memories score higher.
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring for better retrieval quality.
 - **Project scoping**: Automatic context isolation between projects. Different-project items receive a similarity penalty.

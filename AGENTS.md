@@ -126,8 +126,8 @@ Priority: `--db` flag > `SAND_DB` > `SEDIMENT_DB` > default `~/.sand/data`, or `
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring. BM25 boost is additive (max 0.12, power-law gamma 2.0). FTS index created once; search scans rows added since, and compaction rebuilds it
 - **Conflict detection**: Items with >=0.85 similarity flagged on store and enqueued for consolidation
 - **Fresh DB connection per tool call** with shared embedder for efficiency
-- **Memory decay scoring**: Recall results re-ranked using freshness (hyperbolic decay, 0.5 at 30 days) and access frequency (log-scaled). Tracked in SQLite sidecar since LanceDB is append-oriented.
-- **Trust-weighted scoring**: `final_score = similarity * freshness * frequency * trust_bonus` where `trust_bonus = 1.0 + 0.05*ln(1+validation_count) + 0.005*edge_count`
+- **Memory decay scoring**: Recall results re-ranked using freshness (hyperbolic decay, 0.5 at 30 days) since the last access. Tracked in SQLite sidecar since LanceDB is append-oriented.
+- **Trust-weighted scoring**: `final_score = similarity * freshness * trust_bonus` where `trust_bonus = 1.0 + 0.05*ln(1+validation_count) + 0.005*edge_count`
 - **Non-blocking intelligence**: All background tasks (consolidation, co-access tracking, clustering) run as fire-and-forget `tokio::spawn` tasks. Tool responses return immediately. `Semaphore(1)` prevents concurrent consolidation.
 - **Lazy graph backfill**: Pre-existing items get graph nodes when they appear in recall results
 - **Auto-migration**: Database schema is automatically migrated on startup when upgrading from older versions
