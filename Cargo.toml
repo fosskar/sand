@@ -48,7 +48,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Access tracking
+# access.db: graph, consolidation queue, project ids
 rusqlite = { version = "0.43", features = ["bundled"] }
 
 # Utils

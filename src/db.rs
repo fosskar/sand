@@ -72,8 +72,8 @@ const EMBEDDING_BATCH_SIZE: usize = 32;
 
 /// Maximum additive FTS boost applied to vector similarity scores.
 /// The top FTS result (by BM25 score) gets this full boost after power-law scaling.
-/// Grid-searched over [0.04, 0.12] × γ [1.0, 4.0]; 0.12 gives the best composite
-/// score (R@1=45.5%, R@5=78.0%, MRR=59.3%, nDCG@5=57.4%).
+/// Grid-searched in Sediment, before sand changed its ranking, over [0.04, 0.12] × γ [1.0, 4.0];
+/// 0.12 gave the best composite score (R@1=45.5%, R@5=78.0%, MRR=59.3%, nDCG@5=57.4%).
 const FTS_BOOST_MAX: f32 = 0.12;
 
 /// Power-law exponent for BM25 score normalization.
@@ -1470,7 +1470,7 @@ fn walkdir(path: &std::path::Path) -> u64 {
 /// Migrate all LanceDB items from one project ID to another.
 ///
 /// Used when a project's ID changes (e.g., UUID→git root commit hash).
-/// Updates the `project_id` column in-place on both items and chunks tables.
+/// Updates the `project_id` column of the items table in place; chunks have no project id.
 pub async fn migrate_project_id(
     db_path: &std::path::Path,
     old_id: &str,

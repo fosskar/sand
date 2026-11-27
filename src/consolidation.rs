@@ -26,8 +26,7 @@ pub struct ConsolidationQueue {
 }
 
 impl ConsolidationQueue {
-    /// Open or create the consolidation queue database.
-    /// Uses the same SQLite file as access tracking.
+    /// Open or create the consolidation queue in `access.db`, next to the graph store.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).map_err(|e| {
             SandError::Database(format!("Failed to open consolidation database: {}", e))
@@ -236,12 +235,11 @@ async fn process_candidate(
 ) -> Result<String> {
     let graph = crate::graph::GraphStore::open(graph_db_path)?;
 
-    // Fetch items once and reuse for both similarity recomputation and merge/link.
+    // Fetch items once and reuse for both the edge strength and merge/link.
     let item_a = db.get_item(&candidate.item_id_a).await?;
     let item_b = db.get_item(&candidate.item_id_b).await?;
 
-    // Recompute similarity using current embeddings (the stored score may be stale
-    // if items were modified via replace since enqueue time).
+    // edge strength: similarity of the stored embeddings, else the score from the queue
     let fresh_similarity = match (item_a.as_ref(), item_b.as_ref()) {
         (Some(a), Some(b)) if !a.embedding.is_empty() && !b.embedding.is_empty() => {
             // Cosine similarity (embeddings are L2-normalized, so dot product = cosine sim)
@@ -270,7 +268,7 @@ async fn process_candidate(
     };
 
     if same_text {
-        // Duplicate: newer absorbs older (non-destructive — archive removed content)
+        // Duplicate: the newer note absorbs the older one
         match (item_a, item_b) {
             (Some(a), Some(b)) => {
                 // Don't merge items from different projects
@@ -297,9 +295,9 @@ async fn process_candidate(
                     tracing::warn!("transfer_edges failed: {}", e);
                 }
 
-                // Create SUPERSEDES edge (preserves lineage for recovery).
+                // Create SUPERSEDES edge (preserves lineage).
                 // This MUST succeed before we delete — without it the removed
-                // item's lineage is lost and content is irrecoverable.
+                // item's lineage is lost.
                 if let Err(e) = graph.add_supersedes_edge(&keep.id, &remove.id) {
                     tracing::warn!(
                         "add_supersedes_edge failed, aborting merge to prevent data loss: {}",
@@ -308,10 +306,8 @@ async fn process_candidate(
                     return Ok("linked".to_string());
                 }
 
-                // Archive the removed item's content into a RELATED edge label
-                // so it can be recovered if this was a false positive merge.
-                // The edge label stores a truncated snapshot; full content is
-                // preserved in the SUPERSEDES relationship for audit.
+                // Archive a preview of the removed item's content (at most 500 chars)
+                // in a RELATED edge label.
                 let archive_preview = if remove.content.chars().count() > 500 {
                     let cut = remove
                         .content
