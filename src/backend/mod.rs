@@ -21,7 +21,7 @@ pub trait Backend {
     /// Store content, then merge or link the near-duplicates it queued for consolidation.
     async fn store(&self, request: StoreRequest) -> Result<Stored, BackendError>;
 
-    /// Search by semantic similarity, with decay scoring, trust weighting and graph expansion.
+    /// Search by semantic similarity, with decay scoring and graph expansion.
     async fn recall(&self, query: &str, limit: usize) -> Result<Recalled, BackendError>;
 
     async fn list(&self, limit: usize, scope: ListScope) -> Result<Vec<Item>, BackendError>;

@@ -11,7 +11,6 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tempfile::TempDir;
 
-use sand::access::AccessTracker;
 use sand::backend::{RecallConfig, recall_pipeline};
 use sand::db::Database;
 use sand::embedder::Embedder;
@@ -163,7 +162,6 @@ fn recall_benchmarks(c: &mut Criterion) {
                             )
                             .await
                             .unwrap();
-                            let tracker = AccessTracker::open(&access_path).unwrap();
                             let graph = GraphStore::open(&access_path).unwrap();
                             let config = RecallConfig {
                                 enable_graph_backfill: false,
@@ -173,10 +171,8 @@ fn recall_benchmarks(c: &mut Criterion) {
                                 enable_background_tasks: false,
                             };
                             let filters = ItemFilters::new();
-                            let _ = recall_pipeline(
-                                &mut db, &tracker, &graph, query, 5, filters, &config,
-                            )
-                            .await;
+                            let _ =
+                                recall_pipeline(&mut db, &graph, query, 5, filters, &config).await;
                         }
                     });
             });
@@ -205,14 +201,11 @@ fn recall_benchmarks(c: &mut Criterion) {
                             )
                             .await
                             .unwrap();
-                            let tracker = AccessTracker::open(&access_path).unwrap();
                             let graph = GraphStore::open(&access_path).unwrap();
                             let config = RecallConfig::default();
                             let filters = ItemFilters::new();
-                            let _ = recall_pipeline(
-                                &mut db, &tracker, &graph, query, 5, filters, &config,
-                            )
-                            .await;
+                            let _ =
+                                recall_pipeline(&mut db, &graph, query, 5, filters, &config).await;
                         }
                     });
             });

@@ -256,8 +256,21 @@ async fn process_candidate(
         _ => candidate.similarity, // fallback to stored score if items missing/no embeddings
     };
 
-    if fresh_similarity >= 0.95 {
-        // Near-duplicate: newer absorbs older (non-destructive — archive removed content)
+    // similar notes can state different facts, so only the same text is merged:
+    // compared trimmed, with whitespace runs collapsed to one space, and lowercased
+    let normalize = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let same_text = match (item_a.as_ref(), item_b.as_ref()) {
+        (Some(a), Some(b)) => normalize(&a.content) == normalize(&b.content),
+        _ => false,
+    };
+
+    if same_text {
+        // Duplicate: newer absorbs older (non-destructive — archive removed content)
         match (item_a, item_b) {
             (Some(a), Some(b)) => {
                 // Don't merge items from different projects

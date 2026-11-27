@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use super::{Backend, BackendError, Compacted, Recalled, StoreRequest, Stored, failed};
-use crate::access::AccessTracker;
 use crate::compaction::spawn_compaction;
 use crate::consolidation::{ConsolidationQueue, run_consolidation_batch, spawn_consolidation};
 use crate::db::{CompactConfig, DatabaseStats, is_valid_id, score_with_decay};
@@ -230,14 +229,6 @@ impl Backend for LocalBackend {
                     tracing::warn!("replace: transfer_edges failed: {}", e);
                 }
 
-                // a replacement confirms the note, which raises its trust bonus in recall
-                if let Ok(tracker) = AccessTracker::open(&self.access_db_path) {
-                    let created_at = chrono::Utc::now().timestamp();
-                    if let Err(e) = tracker.record_validation(&new_id, created_at) {
-                        tracing::warn!("replace: record_validation failed: {}", e);
-                    }
-                }
-
                 let deleted = match db.delete_item(&old_id).await {
                     Ok(true) => true,
                     Ok(false) => {
@@ -290,24 +281,14 @@ impl Backend for LocalBackend {
     async fn recall(&self, query: &str, limit: usize) -> Result<Recalled, BackendError> {
         let mut db = self.open_db().await?;
         let graph = self.open_graph()?;
-        let tracker = AccessTracker::open(&self.access_db_path)
-            .map_err(failed("Failed to open access tracker"))?;
 
         let config = RecallConfig {
             enable_background_tasks: self.background.is_some(),
             ..Default::default()
         };
-        let result = recall_pipeline(
-            &mut db,
-            &tracker,
-            &graph,
-            query,
-            limit,
-            ItemFilters::new(),
-            &config,
-        )
-        .await
-        .map_err(failed("Search failed"))?;
+        let result = recall_pipeline(&mut db, &graph, query, limit, ItemFilters::new(), &config)
+            .await
+            .map_err(failed("Search failed"))?;
 
         if result.results.is_empty() {
             return Ok(Recalled {
@@ -467,7 +448,7 @@ pub struct RecallResult {
     pub results: Vec<crate::item::SearchResult>,
     pub graph_expanded: Vec<Value>,
     pub suggested: Vec<Value>,
-    /// Raw (pre-decay/trust) similarity scores, keyed by item ID
+    /// Raw (pre-decay) similarity scores, keyed by item ID
     pub raw_similarities: std::collections::HashMap<String, f32>,
 }
 
@@ -477,7 +458,6 @@ pub struct RecallResult {
 /// optional 1-hop graph expansion, and optional co-access suggestions.
 pub async fn recall_pipeline(
     db: &mut Database,
-    tracker: &AccessTracker,
     graph: &GraphStore,
     query: &str,
     limit: usize,
@@ -512,38 +492,13 @@ pub async fn recall_pipeline(
     let mut raw_similarities: std::collections::HashMap<String, f32> =
         std::collections::HashMap::new();
     if config.enable_decay_scoring {
-        let item_ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-        let decay_data = tracker.get_decay_data(&item_ids).unwrap_or_default();
-        let edge_counts = graph.get_edge_counts(&item_ids).unwrap_or_default();
         let now = chrono::Utc::now().timestamp();
 
         for result in &mut results {
             raw_similarities.insert(result.id.clone(), result.similarity);
 
             let created_at = result.created_at.timestamp();
-            let (access_count, last_accessed, validation_count) = match decay_data.get(&result.id) {
-                Some(data) => (
-                    data.access_count,
-                    Some(data.last_accessed_at),
-                    data.validation_count,
-                ),
-                None => (0, None, 0),
-            };
-
-            let base_score = score_with_decay(
-                result.similarity,
-                now,
-                created_at,
-                access_count,
-                last_accessed,
-            );
-
-            let edge_count = edge_counts.get(&result.id).copied().unwrap_or(0);
-            let trust_bonus = 1.0
-                + 0.05 * (1.0 + validation_count as f64).ln() as f32
-                + 0.005 * edge_count as f32;
-
-            result.similarity = (base_score * trust_bonus).min(1.0);
+            result.similarity = score_with_decay(result.similarity, now, created_at).min(1.0);
         }
 
         results.sort_by(|a, b| {
@@ -551,14 +506,6 @@ pub async fn recall_pipeline(
                 .partial_cmp(&a.similarity)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-    }
-
-    // Record access
-    for result in &results {
-        let created_at = result.created_at.timestamp();
-        if let Err(e) = tracker.record_access(&result.id, created_at) {
-            tracing::warn!("record_access failed: {}", e);
-        }
     }
 
     // Graph expansion
@@ -685,6 +632,31 @@ mod tests {
         assert_eq!(truncate("hi", 3), "hi"); // shorter than max, no truncation
         assert_eq!(truncate("hello", 5), "hello");
         assert_eq!(truncate("hello!", 5), "he...");
+    }
+
+    #[tokio::test]
+    #[ignore] // requires model download
+    async fn test_recall_keeps_the_newer_version_first_when_asked_again() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("data");
+        let embedder = Arc::new(Embedder::new().unwrap());
+        let mut db = Database::open_with_embedder(&db_path, None, embedder)
+            .await
+            .unwrap();
+        let mut old = Item::new("Project uses React 16.8.0");
+        old.created_at = chrono::Utc::now() - chrono::Duration::days(60);
+        db.store_item(old).await.unwrap();
+        let new = db.store_item(Item::new("React upgraded to 18.2.0")).await;
+        let new_id = new.unwrap().id;
+
+        let backend = LocalBackend::new(db_path, None);
+        for attempt in 1..=2 {
+            let recalled = backend
+                .recall("what version of React does the project use", 2)
+                .await
+                .unwrap();
+            assert_eq!(recalled.result.results[0].id, new_id, "recall {attempt}");
+        }
     }
 
     #[test]

@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
-pub mod access;
 pub mod backend;
 pub mod chunker;
 pub mod cli;
