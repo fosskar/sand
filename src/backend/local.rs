@@ -181,10 +181,10 @@ impl Backend for LocalBackend {
         let mut item = Item::new(&request.content);
 
         #[cfg(feature = "bench")]
-        if let Some(ts) = request.created_at {
-            if let Some(dt) = chrono::DateTime::from_timestamp(ts, 0) {
-                item = item.with_created_at(dt);
-            }
+        if let Some(ts) = request.created_at
+            && let Some(dt) = chrono::DateTime::from_timestamp(ts, 0)
+        {
+            item = item.with_created_at(dt);
         }
 
         if request.scope == StoreScope::Project
