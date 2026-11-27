@@ -9,8 +9,8 @@ use tracing::info;
 
 use crate::error::{Result, SandError};
 
-/// Default embedding dimension (384-dim for small models).
-/// Kept as a pub const for backward compatibility; prefer `Embedder::dimension()`.
+/// Dimension of the default model; code outside tests uses `Embedder::dimension()`.
+#[cfg(test)]
 pub const EMBEDDING_DIM: usize = 384;
 
 /// Supported embedding models.
@@ -200,18 +200,13 @@ impl Embedder {
             .map_err(|e| SandError::Tokenizer(format!("Failed to set truncation: {}", e)))?;
 
         // Verify integrity of tokenizer and config files using hardcoded SHA-256 hashes.
-        // Skip verification for models with empty (placeholder) hashes.
-        let tokenizer_hash = embedding_model.tokenizer_sha256();
-        if !tokenizer_hash.is_empty() {
-            verify_file_hash(&tokenizer_path, tokenizer_hash, "tokenizer.json")?;
-        }
-        let config_hash = embedding_model.config_sha256();
-        if !config_hash.is_empty() {
-            verify_file_hash(&config_path, config_hash, "config.json")?;
-        }
-        if !tokenizer_hash.is_empty() || !config_hash.is_empty() {
-            info!("Tokenizer and config integrity verified (SHA-256)");
-        }
+        verify_file_hash(
+            &tokenizer_path,
+            embedding_model.tokenizer_sha256(),
+            "tokenizer.json",
+        )?;
+        verify_file_hash(&config_path, embedding_model.config_sha256(), "config.json")?;
+        info!("Tokenizer and config integrity verified (SHA-256)");
 
         // Load model weights into memory and verify integrity.
         // Uses from_buffered_safetensors instead of unsafe from_mmaped_safetensors
@@ -219,10 +214,11 @@ impl Embedder {
         // The same bytes that pass SHA-256 verification are the ones parsed.
         let model_bytes = std::fs::read(&model_path)
             .map_err(|e| SandError::ModelLoading(format!("Failed to read model weights: {}", e)))?;
-        let model_hash = embedding_model.model_sha256();
-        if !model_hash.is_empty() {
-            verify_bytes_hash(&model_bytes, model_hash, "model.safetensors")?;
-        }
+        verify_bytes_hash(
+            &model_bytes,
+            embedding_model.model_sha256(),
+            "model.safetensors",
+        )?;
         let vb = VarBuilder::from_buffered_safetensors(model_bytes, DTYPE, &device)
             .map_err(|e| SandError::ModelLoading(format!("Failed to load weights: {}", e)))?;
 
@@ -363,11 +359,6 @@ impl Embedder {
     /// Get the embedding dimension for the active model
     pub fn dimension(&self) -> usize {
         self.embedding_model.embedding_dim()
-    }
-
-    /// Get the active embedding model
-    pub fn embedding_model(&self) -> EmbeddingModel {
-        self.embedding_model
     }
 }
 

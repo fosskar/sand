@@ -10,7 +10,7 @@
 //! - **Project-aware** - Scoped memories with automatic project detection
 //! - **Auto-chunking** - Long content is automatically chunked for better search
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,17 +30,12 @@ pub mod item;
 pub mod mcp;
 pub mod retry;
 
-pub use chunker::{ChunkResult, ChunkingConfig, chunk_content};
 pub use db::Database;
-pub use document::ContentType;
-pub use embedder::{EMBEDDING_DIM, Embedder, EmbeddingModel};
+pub use embedder::Embedder;
 pub use error::{Result, SandError};
-pub use item::{Chunk, ConflictInfo, Item, ItemFilters, SearchResult, StoreResult};
-pub use retry::{RetryConfig, with_retry};
 
 /// Scope for storing items
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StoreScope {
     /// Store in project-local scope (with project_id)
     #[default]
@@ -74,8 +69,7 @@ impl std::fmt::Display for StoreScope {
 }
 
 /// Scope for listing items (recall always searches all with boosting)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListScope {
     /// List only project-local items
     #[default]

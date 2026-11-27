@@ -3,20 +3,17 @@
 //! Items unify memories and documents into a single concept with automatic chunking.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
 /// A unified item stored in sand
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Item {
     /// Unique identifier (UUID)
     pub id: String,
     /// The actual content
     pub content: String,
-    /// Vector embedding (not serialized to JSON output)
-    #[serde(skip)]
+    /// Vector embedding
     pub embedding: Vec<f32>,
     /// Project ID (None for global items)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     /// Whether this item was chunked (internal)
     pub is_chunked: bool,
@@ -63,7 +60,7 @@ impl Item {
 }
 
 /// A chunk of an item (internal, not exposed to MCP)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Chunk {
     /// Unique identifier (UUID)
     pub id: String,
@@ -73,11 +70,9 @@ pub struct Chunk {
     pub chunk_index: usize,
     /// The chunk content
     pub content: String,
-    /// Vector embedding of the chunk (not serialized)
-    #[serde(skip)]
+    /// Vector embedding of the chunk
     pub embedding: Vec<f32>,
     /// Optional context (e.g., header path, function name)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
 }
 
@@ -102,17 +97,16 @@ impl Chunk {
 }
 
 /// Result from storing an item
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct StoreResult {
     /// The ID of the newly stored item
     pub id: String,
     /// Potentially conflicting items (high similarity)
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub potential_conflicts: Vec<ConflictInfo>,
 }
 
 /// Information about a potential conflict
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ConflictInfo {
     /// The ID of the conflicting item
     pub id: String,
@@ -123,21 +117,19 @@ pub struct ConflictInfo {
 }
 
 /// Result from a search query
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     /// The matching item's id
     pub id: String,
     /// Content (full if short, or preview if chunked)
     pub content: String,
     /// Most relevant chunk content (if chunked)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub relevant_excerpt: Option<String>,
     /// Similarity score (0.0-1.0, higher is more similar)
     pub similarity: f32,
     /// When created
     pub created_at: DateTime<Utc>,
-    /// Project ID (not serialized, used internally for cross-project checks and graph backfill)
-    #[serde(skip)]
+    /// Project ID, for cross-project checks and graph backfill
     pub project_id: Option<String>,
 }
 
@@ -244,50 +236,5 @@ mod tests {
         let result = SearchResult::from_item_with_excerpt(&item, 0.85, "relevant part".to_string());
         assert_eq!(result.content, "Long content here");
         assert_eq!(result.relevant_excerpt, Some("relevant part".to_string()));
-    }
-
-    #[test]
-    fn test_store_result_serialization() {
-        let result = StoreResult {
-            id: "abc123".to_string(),
-            potential_conflicts: vec![],
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("abc123"));
-        // Empty conflicts should not be serialized
-        assert!(!json.contains("potential_conflicts"));
-    }
-
-    #[test]
-    fn test_store_result_with_conflicts() {
-        let result = StoreResult {
-            id: "new-id".to_string(),
-            potential_conflicts: vec![ConflictInfo {
-                id: "old-id".to_string(),
-                content: "Old content".to_string(),
-                similarity: 0.92,
-            }],
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("new-id"));
-        assert!(json.contains("potential_conflicts"));
-        assert!(json.contains("old-id"));
-        assert!(json.contains("0.92"));
-    }
-
-    #[test]
-    fn test_conflict_info_serialization() {
-        let conflict = ConflictInfo {
-            id: "conflict-123".to_string(),
-            content: "Conflicting content".to_string(),
-            similarity: 0.87,
-        };
-
-        let json = serde_json::to_string(&conflict).unwrap();
-        assert!(json.contains("conflict-123"));
-        assert!(json.contains("Conflicting content"));
-        assert!(json.contains("0.87"));
     }
 }

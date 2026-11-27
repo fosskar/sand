@@ -49,7 +49,6 @@ impl Response {
             error: Some(RpcError {
                 code,
                 message: message.to_string(),
-                data: None,
             }),
         }
     }
@@ -60,8 +59,6 @@ impl Response {
 pub struct RpcError {
     pub code: i32,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
 }
 
 // Standard JSON-RPC error codes

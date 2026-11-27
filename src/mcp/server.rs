@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Read, Write};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
@@ -27,8 +26,6 @@ pub struct RateLimitState {
 pub struct ServerContext<B> {
     /// Store the tools act on
     pub backend: B,
-    /// Current working directory (for provenance tracking)
-    pub cwd: PathBuf,
     /// Rate limiter state (mutex protects window+count as a unit)
     pub rate_limit: Mutex<RateLimitState>,
 }
@@ -38,13 +35,9 @@ pub fn run<B: Backend>(backend: B) -> Result<()> {
     // Create tokio runtime for async operations
     let rt = Runtime::new().context("Failed to create tokio runtime")?;
 
-    // Get current working directory
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
     // Create server context with shared resources
     let ctx = ServerContext {
         backend,
-        cwd,
         rate_limit: Mutex::new(RateLimitState {
             window_start_ms: 0,
             count: 0,

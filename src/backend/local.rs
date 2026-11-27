@@ -282,10 +282,7 @@ impl Backend for LocalBackend {
         let mut db = self.open_db().await?;
         let graph = self.open_graph()?;
 
-        let config = RecallConfig {
-            enable_background_tasks: self.background.is_some(),
-            ..Default::default()
-        };
+        let config = RecallConfig::default();
         let result = recall_pipeline(&mut db, &graph, query, limit, ItemFilters::new(), &config)
             .await
             .map_err(failed("Search failed"))?;
@@ -428,7 +425,6 @@ pub struct RecallConfig {
     pub enable_graph_expansion: bool,
     pub enable_co_access: bool,
     pub enable_decay_scoring: bool,
-    pub enable_background_tasks: bool,
 }
 
 impl Default for RecallConfig {
@@ -438,7 +434,6 @@ impl Default for RecallConfig {
             enable_graph_expansion: true,
             enable_co_access: true,
             enable_decay_scoring: true,
-            enable_background_tasks: true,
         }
     }
 }

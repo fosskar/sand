@@ -146,20 +146,6 @@ fn chunk_schema(dim: usize) -> Schema {
 }
 
 impl Database {
-    /// Open or create a database at the given path
-    pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        Self::open_with_project(path, None).await
-    }
-
-    /// Open or create a database at the given path with a project ID
-    pub async fn open_with_project(
-        path: impl Into<PathBuf>,
-        project_id: Option<String>,
-    ) -> Result<Self> {
-        let embedder = Arc::new(Embedder::new()?);
-        Self::open_with_embedder(path, project_id, embedder).await
-    }
-
     /// Open or create a database with a pre-existing embedder.
     ///
     /// This constructor is useful for connection pooling scenarios where
@@ -229,11 +215,6 @@ impl Database {
         database.ensure_vector_index().await?;
 
         Ok(database)
-    }
-
-    /// Set the current project ID for scoped operations
-    pub fn set_project_id(&mut self, project_id: Option<String>) {
-        self.project_id = project_id;
     }
 
     /// Get the current project ID
@@ -1044,21 +1025,6 @@ impl Database {
         Ok(search_results)
     }
 
-    /// Find items similar to the given content (for conflict detection)
-    ///
-    /// This searches the items table directly by content embedding to find
-    /// potentially conflicting items before storing new content.
-    pub async fn find_similar_items(
-        &mut self,
-        content: &str,
-        min_similarity: f32,
-        limit: usize,
-    ) -> Result<Vec<ConflictInfo>> {
-        let embedding = self.embedder.embed_document(content)?;
-        self.find_similar_items_by_vector(&embedding, None, min_similarity, limit)
-            .await
-    }
-
     /// Find items similar to a pre-computed embedding vector (avoids re-embedding).
     ///
     /// If `exclude_id` is provided, results matching that ID are filtered out.
@@ -1859,6 +1825,21 @@ fn create_embedding_array(embedding: &[f32]) -> Result<FixedSizeListArray> {
 
     FixedSizeListArray::try_new(field, dim as i32, Arc::new(values), None)
         .map_err(|e| SandError::Database(format!("Failed to create vector: {}", e)))
+}
+
+#[cfg(test)]
+impl Database {
+    async fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        Self::open_with_project(path, None).await
+    }
+
+    async fn open_with_project(
+        path: impl Into<PathBuf>,
+        project_id: Option<String>,
+    ) -> Result<Self> {
+        let embedder = Arc::new(Embedder::new()?);
+        Self::open_with_embedder(path, project_id, embedder).await
+    }
 }
 
 #[cfg(test)]

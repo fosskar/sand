@@ -168,7 +168,6 @@ fn recall_benchmarks(c: &mut Criterion) {
                                 enable_graph_expansion: false,
                                 enable_co_access: false,
                                 enable_decay_scoring: false,
-                                enable_background_tasks: false,
                             };
                             let filters = ItemFilters::new();
                             let _ =

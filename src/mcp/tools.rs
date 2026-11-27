@@ -513,7 +513,7 @@ fn backend_error(err: BackendError) -> CallToolResult {
 mod tests {
     use super::*;
 
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     use crate::backend::LocalBackend;
@@ -531,7 +531,6 @@ mod tests {
         ServerContext {
             backend: LocalBackend::new(dir.join("data"), Some(project_id.to_string()))
                 .with_background_work(embedder),
-            cwd: PathBuf::from("."),
             rate_limit: Mutex::new(super::super::server::RateLimitState {
                 window_start_ms: 0,
                 count: 0,
