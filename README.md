@@ -11,7 +11,7 @@ Combines vector search and a relationship graph into a unified memory intelligen
 ## Why sand?
 
 - **Single binary, zero config** — no Docker, no Postgres, no Qdrant. Just `sand`.
-- **50ms store, 103ms recall** — local embeddings and vector search at 1K items, no network round-trips.
+- **50ms store, 103ms recall** (Sediment's measurement) — local embeddings and vector search at 1K items, no network round-trips.
 - **4-tool focused API** — `store`, `recall`, `list`, `forget`. That's it.
 - **Works everywhere** — macOS (Intel + ARM), Linux x86_64. All data stays on your machine.
 
@@ -56,6 +56,9 @@ sand 0.6.0 replaces Sediment 0.5.1 without changes to an existing setup. This wa
 
 - The program is named sand: the `sand` executable, the `SAND_*` settings, the `~/.sand/data` default directory, and the MCP server name.
 - sand writes no `.sediment/` or `.sand/` directories and no per-repository files. In a git repository the project ID is computed from the root commit on every start. IDs of other directories live in `access.db`. Existing `.sediment/config` files are still honoured.
+- Recall ranks by vector similarity plus a BM25 keyword boost, with a penalty for notes of other projects and a decay by age since the note was stored. Sediment also weighed how often and with which other notes a note had been recalled; see Fixed and Removed below.
+- Consolidation merges only notes with the same text; similar notes are linked and both stay. See Fixed below.
+- lancedb 0.17 → 0.27 and candle 0.8 → 0.11. New tables keep the file format of lancedb 0.17, so Sediment can still read the store. The full-text index is built once and rebuilt by compaction, instead of on every open.
 
 ### Added
 
@@ -244,7 +247,7 @@ All commands support `--json` for machine-readable output.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SAND_DB` | `~/.sand/data` | Override database path. Useful for ephemeral or isolated storage. |
-| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model (`all-MiniLM-L6-v2`, `bge-small-en-v1.5`). |
+| `SAND_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Override embedding model (`all-MiniLM-L6-v2`, `e5-small-v2`, `bge-small-en-v1.5`, `bge-base-en-v1.5`). `bge-base-en-v1.5` makes 768-dim vectors and needs its own database. |
 
 Example — use a throwaway database for a task:
 
@@ -266,8 +269,9 @@ All local, embedded, zero config:
 
 ### Key Features
 
+- **Ranking**: (vector similarity + BM25 keyword boost of at most 0.12) × 0.875 for notes of another project × freshness. Nothing else enters the score.
 - **Memory decay**: Results re-ranked by age since the note was stored (score halved at 30 days). Old memories rank lower but are never auto-deleted.
-- **Hybrid search**: Vector similarity combined with FTS/BM25 scoring for better retrieval quality.
+- **Hybrid search**: Vector similarity combined with FTS/BM25 scoring for better retrieval quality. The full-text index is created once; search also scans notes added since, and compaction (`sand compact`, and in the MCP server every 50 writes) rebuilds it.
 - **Project scoping**: Automatic context isolation between projects. Different-project items receive a similarity penalty.
 - **Relationship graph**: Items linked via RELATED, SUPERSEDES, and CO_ACCESSED edges. Recall expands results with 1-hop graph neighbors and co-access suggestions.
 - **Background consolidation**: Notes with the same text (ignoring case and whitespace) merged; similar notes (≥0.85 similarity) linked.

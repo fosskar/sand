@@ -2,6 +2,8 @@
 
 Retrieval quality and latency compared against five MCP memory systems, using 1,000 developer memories and 200 search queries. Full benchmark suite: [sediment-benchmark](https://github.com/rendro/sediment-benchmark).
 
+The original author measured all numbers below on Sediment. They do not describe sand: sand ranks without Sediment's access-frequency factor and trust bonus, and merges only notes with the same text, so the consolidation numbers do not apply to it. The README's "Differences from Sediment" section has the retrieval numbers measured after those changes.
+
 ## Results
 
 Measured on Apple M3 Max, 36GB RAM.
