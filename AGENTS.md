@@ -69,8 +69,8 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 
 ### Two-Database Hybrid (all local, embedded, zero config)
 
-- **LanceDB** — Vector embeddings + semantic similarity (items and chunks)
-- **SQLite** (`access.db`) — Graph relationships, consolidation queue, project IDs
+- **LanceDB** (lancedb 0.27, lance 4) — Vector embeddings + semantic similarity (items and chunks)
+- **SQLite** (`access.db`, rusqlite 0.43) — Graph relationships, consolidation queue, project IDs
 
 ### Core Components
 
@@ -79,14 +79,14 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 - **`src/backend/`** - The `Backend` trait: the store operations the CLI and the MCP server call. `LocalBackend` implements it on the local database, runs the recall pipeline, and with `with_background_work` (MCP server) the background tasks
 - **`src/lib.rs`** - Library root exposing public API, project detection, scope types, and project ID migration
 - **`src/db.rs`** - LanceDB wrapper handling vector storage, hybrid search (vector + FTS/BM25), and CRUD operations
-- **`src/embedder.rs`** - Local embeddings via Candle. The `EmbeddingModel` enum lists the supported models; the default is `all-MiniLM-L6-v2` (384-dim vectors)
+- **`src/embedder.rs`** - Local embeddings via Candle 0.11. The `EmbeddingModel` enum lists the supported models; the default is `all-MiniLM-L6-v2` (384-dim vectors)
 - **`src/chunker.rs`** - Smart content chunking by type (markdown, code, JSON, YAML, text)
 - **`src/document.rs`** - ContentType enum for routing content to the appropriate chunker
 - **`src/item.rs`** - Unified Item, Chunk, SearchResult, StoreResult, and ConflictInfo types
 - **`src/graph.rs`** - SQLite graph store: relationship tracking (RELATED, SUPERSEDES, CO_ACCESSED edges)
 - **`src/consolidation.rs`** - Background consolidation: merging notes with the same text, linking similar items
 - **`src/compaction.rs`** - Background compaction of LanceDB storage: compacts fragments, prunes old versions, re-optimizes indices
-- **`src/error.rs`** - SandError enum with typed error variants (Database, Embedding, Arrow, etc.)
+- **`src/error.rs`** - SandError enum with typed error variants (Database, Embedding, Io, ModelLoading, Tokenizer)
 - **`src/retry.rs`** - Retry utilities with exponential backoff (3 attempts, 100ms–2s)
 
 ### MCP Server (`src/mcp/`)
@@ -100,7 +100,7 @@ sand is a semantic memory system for AI agents, running as an MCP (Model Context
 
 1. **Store**: Content → Embedder (384-dim vector) → LanceDB storage → Graph node creation → Conflict detection → Consolidation queue → Consolidation (MCP server: background task; CLI: one batch when the store queued candidates)
 2. **Chunking**: Long content (>1000 chars) → Type-aware splitting → Individual chunk embeddings
-3. **Recall**: Query → Embedder → Vector similarity search → Project boosting → Decay scoring → Graph backfill → 1-hop graph expansion → Co-access suggestions → Cross-project flagging → Background consolidation + co-access recording
+3. **Recall**: Query → Embedder → Vector similarity search + BM25 keyword boost → Cross-project penalty → Decay scoring → Graph backfill → 1-hop graph expansion → Co-access suggestions → Cross-project flagging → Background consolidation + co-access recording
 4. **Consolidation** (after store and recall): Queue candidates → same text after trimming, collapsing whitespace and lowercasing: merge (delete old, transfer edges, SUPERSEDES edge) → otherwise: link (RELATED edge)
 5. **Clustering** (every 10th recall): Triangle detection in graph → RELATED edges labelled `cluster-<id>`
 
@@ -118,9 +118,10 @@ Priority: `--db` flag > `SAND_DB` > `SEDIMENT_DB` > default `~/.sand/data`, or `
 
 ### Key Design Decisions
 
-- **Two-database hybrid**: LanceDB for vectors, SQLite for graph relationships + mutable counters
+- **Two-database hybrid**: LanceDB for vectors, SQLite for the graph, the consolidation queue and project IDs
 - **Single central database** at `~/.sand/data/` stores all projects; graph, consolidation queue and project IDs at `~/.sand/access.db`
 - **Project scoping** (`resolve_project` in `src/lib.rs`): in a git repository the project ID is the root commit hash, derived on every start, so clones and worktrees share it and nothing is written. Any other directory gets a UUID in the `projects` table of `access.db`, keyed by the canonical project root; the nearest ancestor with a row is the root, and a `.git` whose ID cannot be derived (shallow clone, no commits) also makes a root. Sediment's `.sediment/config` files, in the directory or under `<parent of the database path>/projects/<sha256 of the path>/.sediment/config`, are imported into the table and never rewritten; a `.sediment/` directory still makes a root. sand creates no marker directories. When a directory with a stored UUID becomes a git repository, the MCP server moves its items to the git ID and then sets the row to the git ID
+- **Ranking**: (vector similarity + BM25 boost) × 0.875 for items of another project × freshness. Nothing else enters the score: Sediment's access-frequency factor and trust bonus are gone
 - **Similarity boosting**: Same-project items unchanged, different projects get 0.875x penalty (12.5% spread)
 - **Hybrid search**: Vector similarity combined with FTS/BM25 scoring. BM25 boost is additive (max 0.12, power-law gamma 2.0). FTS index created once; search scans rows added since, and compaction rebuilds it
 - **Conflict detection**: Items with >=0.85 similarity flagged on store and enqueued for consolidation
@@ -129,6 +130,7 @@ Priority: `--db` flag > `SAND_DB` > `SEDIMENT_DB` > default `~/.sand/data`, or `
 - **Non-blocking intelligence**: All background tasks (consolidation, co-access tracking, clustering) run as fire-and-forget `tokio::spawn` tasks. Tool responses return immediately. `Semaphore(1)` prevents concurrent consolidation.
 - **Lazy graph backfill**: Pre-existing items get graph nodes when they appear in recall results
 - **Auto-migration**: Database schema is automatically migrated on startup when upgrading from older versions
+- **Storage format**: `Database::open_with_embedder` creates tables with lance file format 2.0 and without v2 manifest paths, as lancedb 0.17 did, so Sediment 0.5.1 and sand 0.6.0 can still read the store. The fixtures in `tests/fixtures/` were written by lancedb 0.17
 
 ## MCP Tools Reference
 
@@ -211,8 +213,9 @@ CREATE TABLE projects (
 
 ## Testing Notes
 
-- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 37 tests are ignored in total and none of them run in the Nix build
+- Embedder tests are marked `#[ignore]` because they require downloading the model (~90MB). The other ignored tests (in `db.rs`, `lib.rs`, `backend/local.rs`, `mcp/tools.rs` and `tests/`) need the model or a git repository; 26 tests are ignored in total and none of them run in the Nix build
 - Set both `SAND_DB` and `SEDIMENT_DB` to temporary paths when you run the ignored tests or the binary by hand: sand reads `SEDIMENT_DB` when `SAND_DB` is unset. Project ids are written to `access.db` next to the database path, and the default is the real store in `~/.sand` or `~/.sediment`
-- `tests/cli_global_scope.rs`, `tests/cli_compat.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
+- `tests/cli_global_scope.rs`, `tests/cli_compat.rs`, `tests/cli_consolidation.rs` and `tests/cli_hook.rs` are integration tests that run the built binaries
+- The git tests in `src/lib.rs` run git with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so a global config that signs commits does not break them
 - Use `tempfile` crate for database tests to avoid polluting real data
 - LanceDB operations are async; tests use `#[tokio::test]` or `tokio::runtime::Runtime`

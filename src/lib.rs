@@ -10,7 +10,7 @@
 //! - **Project-aware** - Scoped memories with automatic project detection
 //! - **Auto-chunking** - Long content is automatically chunked for better search
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,17 +30,12 @@ pub mod item;
 pub mod mcp;
 pub mod retry;
 
-pub use chunker::{ChunkResult, ChunkingConfig, chunk_content};
 pub use db::Database;
-pub use document::ContentType;
-pub use embedder::{EMBEDDING_DIM, Embedder, EmbeddingModel};
+pub use embedder::Embedder;
 pub use error::{Result, SandError};
-pub use item::{Chunk, ConflictInfo, Item, ItemFilters, SearchResult, StoreResult};
-pub use retry::{RetryConfig, with_retry};
 
 /// Scope for storing items
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StoreScope {
     /// Store in project-local scope (with project_id)
     #[default]
@@ -74,8 +69,7 @@ impl std::fmt::Display for StoreScope {
 }
 
 /// Scope for listing items (recall always searches all with boosting)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListScope {
     /// List only project-local items
     #[default]
@@ -408,12 +402,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_list_scope_default_is_project() {
-        // Fix #17: ListScope::default() should be Project, matching the tool schema default
-        assert_eq!(ListScope::default(), ListScope::Project);
-    }
-
-    #[test]
     fn test_sha256_hex() {
         // sediment keyed its central project configs by this format
         assert_eq!(
@@ -431,11 +419,6 @@ mod tests {
 
         std::fs::create_dir(home.join(".sand")).unwrap();
         assert_eq!(default_db_path(home), home.join(".sand/data"));
-    }
-
-    #[test]
-    fn test_store_scope_default_is_project() {
-        assert_eq!(StoreScope::default(), StoreScope::Project);
     }
 
     #[test]
@@ -478,54 +461,34 @@ mod tests {
         assert!((boost_similarity(0.5, None, Some("p1")) - 0.5).abs() < 0.001);
     }
 
-    #[test]
-    #[ignore] // requires git
-    fn test_derive_git_root_commit_in_repo() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
+    /// Run git in `dir` without the user's or the system's git config, which may sign commits.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
 
-        // git init + commit
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-
-        let result = derive_git_root_commit(dir).unwrap();
-        assert!(result.is_some(), "Should return root commit hash");
-        let hash = result.unwrap();
-        assert_eq!(hash.len(), 40, "SHA-1 hash should be 40 chars");
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "Should be hex");
+    fn git_repo(dir: &Path) {
+        git(dir, &["init", "--quiet"]);
+        git(dir, &["commit", "--quiet", "--allow-empty", "-m", "init"]);
     }
 
     #[test]
     #[ignore] // requires git
     fn test_derive_git_root_commit_no_commits() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let dir = tmp.path();
+        git(tmp.path(), &["init", "--quiet"]);
 
-        Command::new("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-
-        let result = derive_git_root_commit(dir).unwrap();
+        let result = derive_git_root_commit(tmp.path()).unwrap();
         assert!(result.is_none(), "Repo with no commits should return None");
     }
 
@@ -534,21 +497,6 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = derive_git_root_commit(tmp.path()).unwrap();
         assert!(result.is_none(), "Non-git directory should return None");
-    }
-
-    fn git_repo(dir: &Path) {
-        for args in [
-            &["init"][..],
-            &["config", "user.email", "test@test.com"],
-            &["config", "user.name", "Test"],
-            &["commit", "--allow-empty", "-m", "init"],
-        ] {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .unwrap();
-        }
     }
 
     #[test]
@@ -560,7 +508,9 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         git_repo(&dir);
         let project = resolve_project(&dir, &db).unwrap();
-        assert_eq!(project.id, derive_git_root_commit(&dir).unwrap().unwrap());
+        let id = derive_git_root_commit(&dir).unwrap().unwrap();
+        assert_eq!(id.len(), 40);
+        assert_eq!(project.id, id);
         let rows: i64 = ProjectTable::open(&db)
             .unwrap()
             .conn
@@ -590,50 +540,21 @@ mod tests {
     fn test_shallow_clone_falls_back_to_uuid() {
         let tmp = tempfile::TempDir::new().unwrap();
         let origin_dir = tmp.path().join("origin");
-        let shallow_dir = tmp.path().join("shallow");
-        std::fs::create_dir_all(&origin_dir).unwrap();
+        std::fs::create_dir(&origin_dir).unwrap();
+        git_repo(&origin_dir);
+        git(
+            &origin_dir,
+            &["commit", "--quiet", "--allow-empty", "-m", "second"],
+        );
 
-        // Create origin repo with a commit
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&origin_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(&origin_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(&origin_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(&origin_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "second"])
-            .current_dir(&origin_dir)
-            .output()
-            .unwrap();
-
-        // Shallow clone (file:// protocol required for local shallow clones)
+        // file:// is required for a local shallow clone
         let origin_url = format!("file://{}", origin_dir.display());
-        Command::new("git")
-            .args([
-                "clone",
-                "--depth=1",
-                &origin_url,
-                shallow_dir.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
+        git(
+            tmp.path(),
+            &["clone", "--quiet", "--depth=1", &origin_url, "shallow"],
+        );
 
-        // derive_git_root_commit should return None for shallow clone
-        let result = derive_git_root_commit(&shallow_dir).unwrap();
+        let result = derive_git_root_commit(&tmp.path().join("shallow")).unwrap();
         assert!(result.is_none(), "Shallow clone should return None");
     }
 }

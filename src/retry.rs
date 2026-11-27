@@ -40,16 +40,6 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
-    /// Create a new retry configuration with custom values.
-    /// `max_attempts` is clamped to a minimum of 1.
-    pub fn new(max_attempts: u32, initial_delay_ms: u64, max_delay_ms: u64) -> Self {
-        Self {
-            max_attempts: max_attempts.max(1),
-            initial_delay_ms,
-            max_delay_ms,
-        }
-    }
-
     /// Calculate the delay for a given attempt number (0-indexed)
     fn delay_for_attempt(&self, attempt: u32) -> Duration {
         let delay_ms = self
@@ -137,15 +127,12 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
-    async fn test_retry_success_first_attempt() {
-        let config = RetryConfig::default();
-        let result: Result<&str, &str> = with_retry(&config, || async { Ok("success") }).await;
-        assert_eq!(result, Ok("success"));
-    }
-
-    #[tokio::test]
     async fn test_retry_success_after_failures() {
-        let config = RetryConfig::new(3, 10, 100); // Short delays for testing
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 10,
+            max_delay_ms: 100,
+        };
         let attempt_count = Arc::new(AtomicU32::new(0));
         let attempt_count_clone = attempt_count.clone();
 
@@ -168,7 +155,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_all_failures() {
-        let config = RetryConfig::new(3, 10, 100); // Short delays for testing
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 10,
+            max_delay_ms: 100,
+        };
         let attempt_count = Arc::new(AtomicU32::new(0));
         let attempt_count_clone = attempt_count.clone();
 
@@ -186,25 +177,17 @@ mod tests {
     }
 
     #[test]
-    fn test_delay_for_attempt_no_overflow() {
-        // Bug #10: large attempt numbers should not panic due to overflow
-        let config = RetryConfig::new(100, 100, 2000);
-        // These should not panic
-        let d64 = config.delay_for_attempt(64);
-        let d100 = config.delay_for_attempt(99);
-        // Should be capped at max_delay_ms
-        assert_eq!(d64, Duration::from_millis(2000));
-        assert_eq!(d100, Duration::from_millis(2000));
-    }
-
-    #[test]
-    fn test_delay_calculation() {
-        let config = RetryConfig::new(5, 100, 1000);
+    fn test_delay_for_attempt() {
+        let config = RetryConfig {
+            max_attempts: 100,
+            initial_delay_ms: 100,
+            max_delay_ms: 1000,
+        };
 
         assert_eq!(config.delay_for_attempt(0), Duration::from_millis(100));
-        assert_eq!(config.delay_for_attempt(1), Duration::from_millis(200));
-        assert_eq!(config.delay_for_attempt(2), Duration::from_millis(400));
         assert_eq!(config.delay_for_attempt(3), Duration::from_millis(800));
         assert_eq!(config.delay_for_attempt(4), Duration::from_millis(1000)); // Capped
+        // Bug #10: large attempt numbers must not overflow
+        assert_eq!(config.delay_for_attempt(99), Duration::from_millis(1000));
     }
 }

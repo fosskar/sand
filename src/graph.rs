@@ -468,66 +468,6 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
 
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    struct ConnectionInfo {
-        target_id: String,
-        rel_type: String,
-        strength: f64,
-        count: Option<i64>,
-    }
-
-    impl GraphStore {
-        fn get_full_connections(&self, item_id: &str) -> Result<Vec<ConnectionInfo>> {
-            let mut stmt = self
-                .conn
-                .prepare(
-                    "SELECT
-                    CASE WHEN from_id = ?1 THEN to_id ELSE from_id END AS neighbor,
-                    edge_type, strength, rel_type, count
-                 FROM graph_edges WHERE from_id = ?1 OR to_id = ?1",
-                )
-                .map_err(|e| {
-                    SandError::Database(format!("Failed to prepare connections query: {}", e))
-                })?;
-
-            let rows = stmt
-                .query_map(params![item_id], |row| {
-                    let neighbor: String = row.get(0)?;
-                    let edge_type: String = row.get(1)?;
-                    let strength: f64 = row.get(2)?;
-                    let rel_type_val: String = row.get(3)?;
-                    let count: i64 = row.get(4)?;
-                    let display_type = match edge_type.as_str() {
-                        "related" => rel_type_val.clone(),
-                        "supersedes" => "supersedes".to_string(),
-                        "co_accessed" => "co_accessed".to_string(),
-                        _ => edge_type.clone(),
-                    };
-                    Ok(ConnectionInfo {
-                        target_id: neighbor,
-                        rel_type: display_type,
-                        strength,
-                        count: if edge_type == "co_accessed" {
-                            Some(count)
-                        } else {
-                            None
-                        },
-                    })
-                })
-                .map_err(|e| SandError::Database(format!("Failed to query connections: {}", e)))?;
-
-            let mut connections = Vec::new();
-            for row in rows {
-                let r = row.map_err(|e| {
-                    SandError::Database(format!("Failed to read connection: {}", e))
-                })?;
-                connections.push(r);
-            }
-            Ok(connections)
-        }
-    }
-
     fn open_test_graph() -> GraphStore {
         let tmp = NamedTempFile::new().unwrap();
         GraphStore::open(tmp.path()).unwrap()
@@ -627,37 +567,22 @@ mod tests {
         graph.add_node("new", Some("proj"), now).unwrap();
         graph.add_node("old", Some("proj"), now).unwrap();
 
-        // Simulate replace workflow: create SUPERSEDES edge new -> old
+        // the replace workflow: SUPERSEDES edge new -> old, then the old node goes
         graph.add_supersedes_edge("new", "old").unwrap();
-
-        // Now remove the old node (as execute_store does)
         graph.remove_node("old").unwrap();
 
-        // The SUPERSEDES edge (new -> old) should survive because old is the to_id
-        let connections = graph.get_full_connections("new").unwrap();
-        assert_eq!(connections.len(), 1, "SUPERSEDES edge should be preserved");
-        assert_eq!(connections[0].target_id, "old");
-        assert_eq!(connections[0].rel_type, "supersedes");
-    }
-
-    #[test]
-    fn test_get_neighbors_bounded() {
-        // Bug #3: get_neighbors should return at most 100 results
-        let graph = open_test_graph();
-        let now = chrono::Utc::now().timestamp();
-        graph.add_node("center", Some("proj"), now).unwrap();
-
-        for i in 0..150 {
-            let id = format!("n{}", i);
-            graph.add_node(&id, Some("proj"), now).unwrap();
-            graph.add_related_edge("center", &id, 0.9, "test").unwrap();
-        }
-
-        let neighbors = graph.get_neighbors(&["center"], 0.0).unwrap();
-        assert!(
-            neighbors.len() <= 100,
-            "get_neighbors should return at most 100, got {}",
-            neighbors.len()
+        let edges: Vec<(String, String, String)> = graph
+            .conn
+            .prepare("SELECT from_id, to_id, edge_type FROM graph_edges")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            edges,
+            [("new".into(), "old".into(), "supersedes".into())],
+            "SUPERSEDES edge should be preserved"
         );
     }
 

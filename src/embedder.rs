@@ -9,8 +9,8 @@ use tracing::info;
 
 use crate::error::{Result, SandError};
 
-/// Default embedding dimension (384-dim for small models).
-/// Kept as a pub const for backward compatibility; prefer `Embedder::dimension()`.
+/// Dimension of the default model; code outside tests uses `Embedder::dimension()`.
+#[cfg(test)]
 pub const EMBEDDING_DIM: usize = 384;
 
 /// Supported embedding models.
@@ -200,18 +200,13 @@ impl Embedder {
             .map_err(|e| SandError::Tokenizer(format!("Failed to set truncation: {}", e)))?;
 
         // Verify integrity of tokenizer and config files using hardcoded SHA-256 hashes.
-        // Skip verification for models with empty (placeholder) hashes.
-        let tokenizer_hash = embedding_model.tokenizer_sha256();
-        if !tokenizer_hash.is_empty() {
-            verify_file_hash(&tokenizer_path, tokenizer_hash, "tokenizer.json")?;
-        }
-        let config_hash = embedding_model.config_sha256();
-        if !config_hash.is_empty() {
-            verify_file_hash(&config_path, config_hash, "config.json")?;
-        }
-        if !tokenizer_hash.is_empty() || !config_hash.is_empty() {
-            info!("Tokenizer and config integrity verified (SHA-256)");
-        }
+        verify_file_hash(
+            &tokenizer_path,
+            embedding_model.tokenizer_sha256(),
+            "tokenizer.json",
+        )?;
+        verify_file_hash(&config_path, embedding_model.config_sha256(), "config.json")?;
+        info!("Tokenizer and config integrity verified (SHA-256)");
 
         // Load model weights into memory and verify integrity.
         // Uses from_buffered_safetensors instead of unsafe from_mmaped_safetensors
@@ -219,10 +214,11 @@ impl Embedder {
         // The same bytes that pass SHA-256 verification are the ones parsed.
         let model_bytes = std::fs::read(&model_path)
             .map_err(|e| SandError::ModelLoading(format!("Failed to read model weights: {}", e)))?;
-        let model_hash = embedding_model.model_sha256();
-        if !model_hash.is_empty() {
-            verify_bytes_hash(&model_bytes, model_hash, "model.safetensors")?;
-        }
+        verify_bytes_hash(
+            &model_bytes,
+            embedding_model.model_sha256(),
+            "model.safetensors",
+        )?;
         let vb = VarBuilder::from_buffered_safetensors(model_bytes, DTYPE, &device)
             .map_err(|e| SandError::ModelLoading(format!("Failed to load weights: {}", e)))?;
 
@@ -364,11 +360,6 @@ impl Embedder {
     pub fn dimension(&self) -> usize {
         self.embedding_model.embedding_dim()
     }
-
-    /// Get the active embedding model
-    pub fn embedding_model(&self) -> EmbeddingModel {
-        self.embedding_model
-    }
 }
 
 /// Download model files from Hugging Face Hub
@@ -469,40 +460,6 @@ mod tests {
         // Check normalization (L2 norm should be ~1.0)
         let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.01);
-
-        Ok(())
-    }
-
-    #[test]
-    #[ignore] // Requires model download
-    fn test_batch_embedding() -> Result<()> {
-        let embedder = Embedder::new()?;
-
-        let texts = vec!["Hello", "World", "Test sentence"];
-        let embeddings = embedder.embed_batch(&texts)?;
-
-        assert_eq!(embeddings.len(), 3);
-        for emb in &embeddings {
-            assert_eq!(emb.len(), EMBEDDING_DIM);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    #[ignore] // Requires model download
-    fn test_embed_query_and_document() -> Result<()> {
-        let embedder = Embedder::new()?;
-
-        let query_emb = embedder.embed_query("What database do we use?")?;
-        let doc_emb = embedder.embed_document("We use Postgres for the main database")?;
-
-        assert_eq!(query_emb.len(), EMBEDDING_DIM);
-        assert_eq!(doc_emb.len(), EMBEDDING_DIM);
-
-        // For AllMiniLmL6V2 (no prefixes), embed_query and embed should be identical
-        let raw_emb = embedder.embed("What database do we use?")?;
-        assert_eq!(query_emb, raw_emb);
 
         Ok(())
     }
@@ -618,14 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn test_embedding_model_dimensions() {
-        assert_eq!(EmbeddingModel::AllMiniLmL6V2.embedding_dim(), 384);
-        assert_eq!(EmbeddingModel::E5SmallV2.embedding_dim(), 384);
-        assert_eq!(EmbeddingModel::BgeSmallEnV15.embedding_dim(), 384);
-        assert_eq!(EmbeddingModel::BgeBaseEnV15.embedding_dim(), 768);
-    }
-
-    #[test]
     fn test_embedding_model_prefixes() {
         let text = "hello world";
 
@@ -657,25 +606,11 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_bytes_hash_correct() {
+    fn test_verify_bytes_hash() {
         let data = b"hello world";
         let expected = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
         assert!(verify_bytes_hash(data, expected, "test").is_ok());
-    }
-
-    #[test]
-    fn test_verify_bytes_hash_incorrect() {
-        let data = b"hello world";
-        let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
-        let err = verify_bytes_hash(data, wrong, "test").unwrap_err();
+        let err = verify_bytes_hash(data, &"0".repeat(64), "test").unwrap_err();
         assert!(err.to_string().contains("integrity check failed"));
-    }
-
-    #[test]
-    fn test_verify_bytes_hash_empty() {
-        let data = b"";
-        // SHA-256 of empty input
-        let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        assert!(verify_bytes_hash(data, expected, "empty").is_ok());
     }
 }

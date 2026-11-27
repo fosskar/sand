@@ -10,7 +10,7 @@ cd sand
 cargo build
 ```
 
-The first build will download the embedding model (~90MB).
+`nix develop` gives a shell with the toolchain. The embedding model (~90MB) is downloaded on first use, not at build time.
 
 ## Development
 
@@ -21,14 +21,16 @@ cargo build
 # Run tests
 cargo test
 
-# Run ignored tests (require model download)
-cargo test -- --ignored
+# Run all tests, including the ones that need the model or git;
+# point both variables at a throwaway store, never at your real one
+SAND_DB=/tmp/sand-test/data SEDIMENT_DB=/tmp/sand-test/data cargo test -- --include-ignored
 
-# Lint
+# Lint, with and without the bench feature
 cargo clippy --all-targets -- -D warnings
+cargo clippy --features bench --all-targets -- -D warnings
 
 # Format
-cargo fmt --all
+nix fmt
 
 # Benchmarks
 cargo bench
@@ -38,7 +40,7 @@ cargo bench
 
 1. Fork the repo and create a feature branch
 2. Make your changes
-3. Ensure `cargo test`, `cargo clippy`, and `cargo fmt --check` all pass
+3. Ensure `nix flake check` passes (build with tests, formatting, clippy)
 4. Write a clear PR description explaining the change
 
 ## Architecture

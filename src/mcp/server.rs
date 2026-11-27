@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Read, Write};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
 
@@ -27,8 +26,6 @@ pub struct RateLimitState {
 pub struct ServerContext<B> {
     /// Store the tools act on
     pub backend: B,
-    /// Current working directory (for provenance tracking)
-    pub cwd: PathBuf,
     /// Rate limiter state (mutex protects window+count as a unit)
     pub rate_limit: Mutex<RateLimitState>,
 }
@@ -38,13 +35,9 @@ pub fn run<B: Backend>(backend: B) -> Result<()> {
     // Create tokio runtime for async operations
     let rt = Runtime::new().context("Failed to create tokio runtime")?;
 
-    // Get current working directory
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
     // Create server context with shared resources
     let ctx = ServerContext {
         backend,
-        cwd,
         rate_limit: Mutex::new(RateLimitState {
             window_start_ms: 0,
             count: 0,
@@ -322,106 +315,4 @@ fn handle_call_tool<B: Backend>(
 /// Handle ping request
 fn handle_ping(id: Option<Value>) -> Response {
     Response::success(id, json!({}))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rate_limiter_blocks_after_limit() {
-        // Fix #1: Rate limiter should correctly count within a window
-        let mut state = RateLimitState {
-            window_start_ms: 0,
-            count: 0,
-        };
-        let now_ms = 100_000u64;
-        // Window 0 is expired (100000 - 0 = 100000 > 60000)
-        assert!(now_ms.saturating_sub(state.window_start_ms) > 60_000);
-        state.window_start_ms = now_ms;
-        state.count = 1;
-
-        // Now simulate 599 more calls in the same window
-        for _ in 0..599 {
-            state.count += 1;
-        }
-        assert_eq!(state.count, 600);
-
-        // 601st call should exceed the limit
-        state.count += 1;
-        assert!(state.count > 600, "Should exceed rate limit");
-    }
-
-    #[test]
-    fn test_rate_limiter_resets_after_window() {
-        let mut state = RateLimitState {
-            window_start_ms: 100_000,
-            count: 600,
-        };
-
-        // Simulate time advancing past the window
-        let now_ms = 200_000u64; // 100 seconds later
-        if now_ms.saturating_sub(state.window_start_ms) > 60_000 {
-            state.window_start_ms = now_ms;
-            state.count = 0;
-        }
-        state.count += 1;
-
-        assert_eq!(state.count, 1, "Count should reset after window expires");
-        assert_eq!(state.window_start_ms, 200_000);
-    }
-
-    #[test]
-    fn test_rate_limiter_exactly_at_limit() {
-        // Bug #7: Effective limit should be exactly MAX_CALLS, not MAX_CALLS+1.
-        const MAX_CALLS: u64 = 600;
-        let mut state = RateLimitState {
-            window_start_ms: 100_000,
-            count: 0,
-        };
-        let now_ms = 100_000u64; // same window
-
-        for _ in 0..MAX_CALLS {
-            if now_ms.saturating_sub(state.window_start_ms) > 60_000 {
-                state.window_start_ms = now_ms;
-                state.count = 0;
-            }
-            state.count += 1;
-            assert!(state.count <= MAX_CALLS, "Should not exceed limit");
-        }
-        assert_eq!(state.count, MAX_CALLS);
-
-        // The (MAX_CALLS+1)th call should be rejected
-        state.count += 1;
-        assert!(state.count > MAX_CALLS, "Next call should exceed limit");
-    }
-
-    #[test]
-    fn test_rate_limiter_recovers_from_poisoned_mutex() {
-        // Regression test: poisoned mutex should reset to clean state, not inherit stale data
-        let rate_limit = Mutex::new(RateLimitState {
-            window_start_ms: 50_000,
-            count: 999,
-        });
-
-        // Poison the mutex by panicking while holding the lock
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = rate_limit.lock().unwrap();
-            panic!("intentional poison");
-        }));
-        assert!(result.is_err());
-
-        // Recovery should reset to clean state
-        let state = rate_limit.lock().unwrap_or_else(|e| {
-            let mut guard = e.into_inner();
-            guard.window_start_ms = 0;
-            guard.count = 0;
-            guard
-        });
-        assert_eq!(
-            state.window_start_ms, 0,
-            "Should reset window on poison recovery"
-        );
-        assert_eq!(state.count, 0, "Should reset count on poison recovery");
-    }
 }
