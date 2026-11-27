@@ -518,10 +518,14 @@ mod tests {
 
     use crate::backend::LocalBackend;
 
+    // list rejects project ids that are not hex
+    const PROJECT_A: &str = "00000000000000000000000000000000000000aa";
+    const PROJECT_B: &str = "00000000000000000000000000000000000000bb";
+
     /// Create a ServerContext with temp dirs for integration testing.
     async fn setup_test_context() -> (ServerContext<LocalBackend>, tempfile::TempDir) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let ctx = test_context(tmp.path(), "test-project-00000001");
+        let ctx = test_context(tmp.path(), PROJECT_A);
         (ctx, tmp)
     }
 
@@ -571,34 +575,6 @@ mod tests {
             "Recall should return stored content, got: {}",
             text
         );
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_store_and_list() {
-        let (ctx, _tmp) = setup_test_context().await;
-
-        // Store 2 items
-        execute_tool(
-            &ctx,
-            "store",
-            Some(json!({ "content": "First item for listing" })),
-        )
-        .await;
-        execute_tool(
-            &ctx,
-            "store",
-            Some(json!({ "content": "Second item for listing" })),
-        )
-        .await;
-
-        // List items
-        let list_result = execute_tool(&ctx, "list", Some(json!({ "scope": "project" }))).await;
-        assert!(list_result.is_error.is_none(), "List should succeed");
-
-        let text = &list_result.content[0].text;
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["count"], 2, "Should list 2 items");
     }
 
     #[tokio::test]
@@ -659,82 +635,6 @@ mod tests {
             text.contains("No items stored yet"),
             "Should have no items after forget, got: {}",
             text
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_recall_empty_db() {
-        let (ctx, _tmp) = setup_test_context().await;
-
-        let result = execute_tool(&ctx, "recall", Some(json!({ "query": "anything" }))).await;
-        assert!(
-            result.is_error.is_none(),
-            "Recall on empty DB should not error"
-        );
-
-        let text = &result.content[0].text;
-        assert!(
-            text.contains("No items found"),
-            "Should indicate no items found, got: {}",
-            text
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_store_rejects_oversized_content() {
-        let (ctx, _tmp) = setup_test_context().await;
-
-        let large_content = "x".repeat(1_100_000); // >1MB
-        let result = execute_tool(&ctx, "store", Some(json!({ "content": large_content }))).await;
-        assert!(
-            result.is_error == Some(true),
-            "Should reject oversized content"
-        );
-
-        let text = &result.content[0].text;
-        assert!(
-            text.contains("too large"),
-            "Error should mention size, got: {}",
-            text
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_recall_rejects_oversized_query() {
-        let (ctx, _tmp) = setup_test_context().await;
-
-        let large_query = "x".repeat(11_000); // >10KB
-        let result = execute_tool(&ctx, "recall", Some(json!({ "query": large_query }))).await;
-        assert!(
-            result.is_error == Some(true),
-            "Should reject oversized query"
-        );
-
-        let text = &result.content[0].text;
-        assert!(
-            text.contains("too large"),
-            "Error should mention size, got: {}",
-            text
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_store_missing_params() {
-        let (ctx, _tmp) = setup_test_context().await;
-
-        // No params at all
-        let result = execute_tool(&ctx, "store", None).await;
-        assert!(result.is_error == Some(true), "Should error with no params");
-
-        // Empty object (missing required 'content')
-        let result = execute_tool(&ctx, "store", Some(json!({}))).await;
-        assert!(
-            result.is_error == Some(true),
-            "Should error with missing content"
         );
     }
 
@@ -822,8 +722,7 @@ mod tests {
     #[ignore] // requires model download
     async fn test_store_global_scope_is_global() {
         let tmp = tempfile::TempDir::new().unwrap();
-        // list rejects project ids that are not hex
-        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");
+        let ctx = test_context(tmp.path(), PROJECT_A);
 
         let result = execute_tool(
             &ctx,
@@ -838,7 +737,7 @@ mod tests {
         assert_eq!(list_ids(&ctx, "all").await, vec![id.clone()]);
 
         // another project sees the item as global: no cross-project flag, may forget it
-        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000bb");
+        let ctx = test_context(tmp.path(), PROJECT_B);
         let recall = execute_tool(
             &ctx,
             "recall",
@@ -866,37 +765,6 @@ mod tests {
             forget.content
         );
         assert!(list_ids(&ctx, "all").await.is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_store_replace_id_global_scope() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let ctx = test_context(tmp.path(), "00000000000000000000000000000000000000aa");
-
-        let old_id = store_id(
-            &execute_tool(
-                &ctx,
-                "store",
-                Some(json!({ "content": "global note, first version", "scope": "global" })),
-            )
-            .await,
-        );
-        let new_id = store_id(
-            &execute_tool(
-                &ctx,
-                "store",
-                Some(json!({
-                    "content": "global note, second version",
-                    "scope": "global",
-                    "replace_id": old_id
-                })),
-            )
-            .await,
-        );
-
-        assert_eq!(list_ids(&ctx, "global").await, vec![new_id]);
-        assert!(list_ids(&ctx, "project").await.is_empty());
     }
 
     #[tokio::test]

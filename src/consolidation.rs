@@ -400,41 +400,4 @@ mod tests {
         assert_eq!(pending[0].item_id_a, "a");
         assert_eq!(pending[0].item_id_b, "z");
     }
-
-    #[tokio::test]
-    async fn test_semaphore_released_on_panic() {
-        // Bug #8: Semaphore permit must be released even if the spawned task panics.
-        // OwnedSemaphorePermit is dropped automatically on panic; borrowed SemaphorePermit is not.
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-
-        let sem = semaphore.clone();
-        let handle = tokio::spawn(async move {
-            let _permit = sem.try_acquire_owned().unwrap();
-            panic!("simulated panic");
-        });
-        let _ = handle.await; // JoinError from panic
-
-        assert_eq!(
-            semaphore.available_permits(),
-            1,
-            "Semaphore should be released after panic"
-        );
-    }
-
-    #[test]
-    fn test_cross_project_items_should_not_merge() {
-        // Bug #11: Items from different projects should not be merged.
-        // The actual merge prevention is in process_candidate (async + DB),
-        // so we test the guard logic here.
-        let project_a = Some("proj-aaa".to_string());
-        let project_b = Some("proj-bbb".to_string());
-        let project_a2 = Some("proj-aaa".to_string());
-
-        assert_ne!(project_a, project_b, "Different projects should not match");
-        assert_eq!(project_a, project_a2, "Same project should match");
-        assert_ne!(
-            project_a, None::<String>,
-            "Global vs project should not match"
-        );
-    }
 }

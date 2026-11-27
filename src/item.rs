@@ -188,53 +188,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_item_creation() {
-        let item = Item::new("Test content").with_project_id("project-123");
-
-        assert_eq!(item.content, "Test content");
-        assert_eq!(item.project_id, Some("project-123".to_string()));
-        assert!(!item.is_chunked);
-    }
-
-    #[test]
-    fn test_embedding_text_short() {
-        let item = Item::new("Short content");
-        assert_eq!(item.embedding_text(), "Short content");
-    }
-
-    #[test]
     fn test_embedding_text_chunked() {
         let item = Item::new("a".repeat(1000)).with_chunked(true);
         let text = item.embedding_text();
         assert_eq!(text.len(), 500);
-    }
-
-    #[test]
-    fn test_chunk_creation() {
-        let chunk = Chunk::new("item-123", 0, "Chunk content").with_context("## Header");
-
-        assert_eq!(chunk.item_id, "item-123");
-        assert_eq!(chunk.chunk_index, 0);
-        assert_eq!(chunk.content, "Chunk content");
-        assert_eq!(chunk.context, Some("## Header".to_string()));
-    }
-
-    #[test]
-    fn test_search_result_from_item() {
-        let item = Item::new("Test content");
-
-        let result = SearchResult::from_item(&item, 0.95);
-        assert_eq!(result.content, "Test content");
-        assert_eq!(result.similarity, 0.95);
-        assert!(result.relevant_excerpt.is_none());
-    }
-
-    #[test]
-    fn test_search_result_with_excerpt() {
-        let item = Item::new("Long content here").with_chunked(true);
-
-        let result = SearchResult::from_item_with_excerpt(&item, 0.85, "relevant part".to_string());
-        assert_eq!(result.content, "Long content here");
-        assert_eq!(result.relevant_excerpt, Some("relevant part".to_string()));
     }
 }

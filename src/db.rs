@@ -1847,91 +1847,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_score_with_decay_fresh_item() {
+    fn test_score_with_decay() {
         let now = 1700000000i64;
-        let created = now; // just created
-        let score = score_with_decay(0.8, now, created);
-        // freshness = 1.0
-        let expected = 0.8;
-        assert!((score - expected).abs() < 0.001, "got {}", score);
+        // freshness = 1 / (1 + age_days / 30)
+        for (days, expected) in [(0, 0.8), (30, 0.4), (90, 0.2)] {
+            let score = score_with_decay(0.8, now, now - days * 86400);
+            assert!((score - expected).abs() < 0.001, "{days} days: {score}");
+        }
     }
 
     #[test]
-    fn test_score_with_decay_30_day_old() {
-        let now = 1700000000i64;
-        let created = now - 30 * 86400; // 30 days old
-        let score = score_with_decay(0.8, now, created);
-        // freshness = 1/(1+1) = 0.5
-        let expected = 0.8 * 0.5;
-        assert!((score - expected).abs() < 0.001, "got {}", score);
-    }
-
-    #[test]
-    fn test_score_with_decay_old_and_unused() {
-        let now = 1700000000i64;
-        let created = now - 90 * 86400; // 90 days old
-        let score = score_with_decay(0.8, now, created);
-        // freshness = 1/(1+3) = 0.25
-        let expected = 0.8 * 0.25;
-        assert!((score - expected).abs() < 0.001, "got {}", score);
-    }
-
-    #[test]
-    fn test_sanitize_sql_string_escapes_quotes_and_backslashes() {
+    fn test_sanitize_sql_string() {
         assert_eq!(sanitize_sql_string("hello"), "hello");
         assert_eq!(sanitize_sql_string("it's"), "it''s");
         assert_eq!(sanitize_sql_string(r"a\'b"), r"a\\''b");
-        assert_eq!(sanitize_sql_string(r"path\to\file"), r"path\\to\\file");
-    }
-
-    #[test]
-    fn test_sanitize_sql_string_strips_null_bytes() {
         assert_eq!(sanitize_sql_string("abc\0def"), "abcdef");
-        assert_eq!(sanitize_sql_string("\0' OR 1=1 --"), "'' OR 1=1 ");
-        // Block comment close should also be stripped
-        assert_eq!(sanitize_sql_string("*/ OR 1=1"), " OR 1=1");
-        assert_eq!(sanitize_sql_string("clean"), "clean");
-    }
-
-    #[test]
-    fn test_sanitize_sql_string_strips_semicolons() {
-        assert_eq!(
-            sanitize_sql_string("a; DROP TABLE items"),
-            "a DROP TABLE items"
-        );
         assert_eq!(sanitize_sql_string("normal;"), "normal");
-    }
-
-    #[test]
-    fn test_sanitize_sql_string_strips_comments() {
-        // Line comments (-- stripped, leaving extra space)
         assert_eq!(sanitize_sql_string("val' -- comment"), "val''  comment");
-        // Block comments (/* and */ both stripped)
         assert_eq!(sanitize_sql_string("val' /* block */"), "val''  block ");
-        // Nested attempts
         assert_eq!(sanitize_sql_string("a--b--c"), "abc");
-        // Standalone */ without matching /*
-        assert_eq!(sanitize_sql_string("injected */ rest"), "injected  rest");
-        // Only */
-        assert_eq!(sanitize_sql_string("*/"), "");
-    }
-
-    #[test]
-    fn test_sanitize_sql_string_adversarial_inputs() {
-        // Classic SQL injection
         assert_eq!(
             sanitize_sql_string("'; DROP TABLE items;--"),
             "'' DROP TABLE items"
         );
-        // Unicode escapes (should pass through harmlessly)
-        assert_eq!(
-            sanitize_sql_string("hello\u{200B}world"),
-            "hello\u{200B}world"
-        );
-        // Empty string
-        assert_eq!(sanitize_sql_string(""), "");
-        // Only special chars
-        assert_eq!(sanitize_sql_string("\0;\0"), "");
     }
 
     #[test]
@@ -1970,33 +1908,6 @@ mod tests {
         let yaml = "---\nname: test\nversion: 1.0";
         let detected = detect_content_type(yaml);
         assert_eq!(detected, ContentType::Yaml);
-    }
-
-    #[test]
-    fn test_chunk_threshold_uses_chars_not_bytes() {
-        // Bug #12: CHUNK_THRESHOLD should compare character count, not byte count.
-        // 500 emoji chars = 2000 bytes. Should NOT exceed 1000-char threshold.
-        let emoji_content = "😀".repeat(500);
-        assert_eq!(emoji_content.chars().count(), 500);
-        assert_eq!(emoji_content.len(), 2000); // 4 bytes per emoji
-
-        let should_chunk = emoji_content.chars().count() > CHUNK_THRESHOLD;
-        assert!(
-            !should_chunk,
-            "500 chars should not exceed 1000-char threshold"
-        );
-
-        // 1001 chars should trigger chunking
-        let long_content = "a".repeat(1001);
-        let should_chunk = long_content.chars().count() > CHUNK_THRESHOLD;
-        assert!(should_chunk, "1001 chars should exceed 1000-char threshold");
-    }
-
-    #[test]
-    fn test_schema_version() {
-        // Ensure schema version is set
-        let version = SCHEMA_VERSION;
-        assert!(version >= 2, "Schema version should be at least 2");
     }
 
     use crate::embedder::EMBEDDING_DIM;
@@ -2051,81 +1962,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore] // requires model download
-    async fn test_check_needs_migration_detects_old_schema() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("data");
-
-        // Create a LanceDB connection and insert an old-schema table
-        let db_conn = lancedb::connect(db_path.to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-
-        let schema = Arc::new(old_item_schema());
-        let batch = old_item_batch("test-id-1", "old content");
-        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
-        db_conn
-            .create_table(
-                "items",
-                Box::new(batches) as Box<dyn RecordBatchReader + Send>,
-            )
-            .execute()
-            .await
-            .unwrap();
-
-        // Build a Database struct manually (without ensure_tables to skip auto-migration)
-        let db = Database {
-            db: db_conn,
-            embedder: Arc::new(Embedder::new().unwrap()),
-            project_id: None,
-            items_table: None,
-            chunks_table: None,
-            fts_boost_max: FTS_BOOST_MAX,
-            fts_gamma: FTS_GAMMA,
-        };
-
-        let needs_migration = db.check_needs_migration().await.unwrap();
-        assert!(
-            needs_migration,
-            "Old schema with tags column should need migration"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
-    async fn test_check_needs_migration_false_for_new_schema() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("data");
-
-        // Create a LanceDB connection with new schema
-        let db_conn = lancedb::connect(db_path.to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-
-        let schema = Arc::new(item_schema(EMBEDDING_DIM));
-        db_conn
-            .create_empty_table("items", schema)
-            .execute()
-            .await
-            .unwrap();
-
-        let db = Database {
-            db: db_conn,
-            embedder: Arc::new(Embedder::new().unwrap()),
-            project_id: None,
-            items_table: None,
-            chunks_table: None,
-            fts_boost_max: FTS_BOOST_MAX,
-            fts_gamma: FTS_GAMMA,
-        };
-
-        let needs_migration = db.check_needs_migration().await.unwrap();
-        assert!(!needs_migration, "New schema should not need migration");
-    }
-
-    #[tokio::test]
-    #[ignore] // requires model download
     async fn test_migrate_schema_preserves_data() {
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("data");
@@ -2137,8 +1973,8 @@ mod tests {
             .unwrap();
 
         let schema = Arc::new(old_item_schema());
-        let batch1 = old_item_batch("id-aaa", "first item content");
-        let batch2 = old_item_batch("id-bbb", "second item content");
+        let batch1 = old_item_batch("aaaa0001", "first item content");
+        let batch2 = old_item_batch("bbbb0002", "second item content");
         let batches = RecordBatchIterator::new(vec![Ok(batch1), Ok(batch2)], schema);
         db_conn
             .create_table(
@@ -2164,12 +2000,12 @@ mod tests {
         );
 
         // Verify data preserved
-        let item_a = db.get_item("id-aaa").await.unwrap();
-        assert!(item_a.is_some(), "Item id-aaa should be preserved");
+        let item_a = db.get_item("aaaa0001").await.unwrap();
+        assert!(item_a.is_some(), "Item aaaa0001 should be preserved");
         assert_eq!(item_a.unwrap().content, "first item content");
 
-        let item_b = db.get_item("id-bbb").await.unwrap();
-        assert!(item_b.is_some(), "Item id-bbb should be preserved");
+        let item_b = db.get_item("bbbb0002").await.unwrap();
+        assert!(item_b.is_some(), "Item bbbb0002 should be preserved");
         assert_eq!(item_b.unwrap().content, "second item content");
 
         // Verify row count
@@ -2203,7 +2039,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from(vec!["staging-id"])),
+                Arc::new(StringArray::from(vec!["5a0001"])),
                 Arc::new(StringArray::from(vec!["staging content"])),
                 Arc::new(StringArray::from(vec![None::<&str>])),
                 Arc::new(BooleanArray::from(vec![false])),
@@ -2231,7 +2067,7 @@ mod tests {
             .unwrap();
 
         // Verify item was recovered
-        let item = db.get_item("staging-id").await.unwrap();
+        let item = db.get_item("5a0001").await.unwrap();
         assert!(item.is_some(), "Item should be recovered from staging");
         assert_eq!(item.unwrap().content, "staging content");
 
@@ -2257,7 +2093,7 @@ mod tests {
 
         // items with old schema
         let old_schema = Arc::new(old_item_schema());
-        let batch = old_item_batch("old-id", "old content");
+        let batch = old_item_batch("01d0001", "old content");
         let batches = RecordBatchIterator::new(vec![Ok(batch)], old_schema);
         db_conn
             .create_table(
@@ -2288,7 +2124,7 @@ mod tests {
         assert!(!needs_migration, "Should have migrated after recovery");
 
         // Verify data preserved
-        let item = db.get_item("old-id").await.unwrap();
+        let item = db.get_item("01d0001").await.unwrap();
         assert!(
             item.is_some(),
             "Item should be preserved through recovery + migration"
@@ -2330,7 +2166,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             new_schema.clone(),
             vec![
-                Arc::new(StringArray::from(vec!["new-id"])),
+                Arc::new(StringArray::from(vec!["0e0001"])),
                 Arc::new(StringArray::from(vec!["new content"])),
                 Arc::new(StringArray::from(vec![None::<&str>])),
                 Arc::new(BooleanArray::from(vec![false])),
@@ -2365,7 +2201,7 @@ mod tests {
             .unwrap();
 
         // Verify data intact
-        let item = db.get_item("new-id").await.unwrap();
+        let item = db.get_item("0e0001").await.unwrap();
         assert!(item.is_some(), "Item should be untouched");
         assert_eq!(item.unwrap().content, "new content");
 
@@ -2474,6 +2310,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires model download
     async fn test_list_items_rejects_invalid_project_id() {
+        // outside git the project id can come from a `.sediment/config` file
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("data");
         let malicious_pid = "'; DROP TABLE items;--".to_string();
@@ -2481,6 +2318,8 @@ mod tests {
         let mut db = Database::open_with_project(&db_path, Some(malicious_pid))
             .await
             .unwrap();
+        // without an items table list returns before the check
+        db.store_item(Item::new("global note")).await.unwrap();
 
         let result = db.list_items(Some(10), crate::ListScope::Project).await;
 

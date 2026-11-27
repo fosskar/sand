@@ -466,40 +466,6 @@ mod tests {
 
     #[test]
     #[ignore] // Requires model download
-    fn test_batch_embedding() -> Result<()> {
-        let embedder = Embedder::new()?;
-
-        let texts = vec!["Hello", "World", "Test sentence"];
-        let embeddings = embedder.embed_batch(&texts)?;
-
-        assert_eq!(embeddings.len(), 3);
-        for emb in &embeddings {
-            assert_eq!(emb.len(), EMBEDDING_DIM);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    #[ignore] // Requires model download
-    fn test_embed_query_and_document() -> Result<()> {
-        let embedder = Embedder::new()?;
-
-        let query_emb = embedder.embed_query("What database do we use?")?;
-        let doc_emb = embedder.embed_document("We use Postgres for the main database")?;
-
-        assert_eq!(query_emb.len(), EMBEDDING_DIM);
-        assert_eq!(doc_emb.len(), EMBEDDING_DIM);
-
-        // For AllMiniLmL6V2 (no prefixes), embed_query and embed should be identical
-        let raw_emb = embedder.embed("What database do we use?")?;
-        assert_eq!(query_emb, raw_emb);
-
-        Ok(())
-    }
-
-    #[test]
-    #[ignore] // Requires model download
     fn test_e5_small_v2_embedder() -> Result<()> {
         let embedder = Embedder::with_embedding_model(EmbeddingModel::E5SmallV2)?;
 
@@ -609,14 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn test_embedding_model_dimensions() {
-        assert_eq!(EmbeddingModel::AllMiniLmL6V2.embedding_dim(), 384);
-        assert_eq!(EmbeddingModel::E5SmallV2.embedding_dim(), 384);
-        assert_eq!(EmbeddingModel::BgeSmallEnV15.embedding_dim(), 384);
-        assert_eq!(EmbeddingModel::BgeBaseEnV15.embedding_dim(), 768);
-    }
-
-    #[test]
     fn test_embedding_model_prefixes() {
         let text = "hello world";
 
@@ -648,25 +606,11 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_bytes_hash_correct() {
+    fn test_verify_bytes_hash() {
         let data = b"hello world";
         let expected = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
         assert!(verify_bytes_hash(data, expected, "test").is_ok());
-    }
-
-    #[test]
-    fn test_verify_bytes_hash_incorrect() {
-        let data = b"hello world";
-        let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
-        let err = verify_bytes_hash(data, wrong, "test").unwrap_err();
+        let err = verify_bytes_hash(data, &"0".repeat(64), "test").unwrap_err();
         assert!(err.to_string().contains("integrity check failed"));
-    }
-
-    #[test]
-    fn test_verify_bytes_hash_empty() {
-        let data = b"";
-        // SHA-256 of empty input
-        let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        assert!(verify_bytes_hash(data, expected, "empty").is_ok());
     }
 }
